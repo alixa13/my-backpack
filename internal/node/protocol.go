@@ -52,6 +52,16 @@ const (
 	// remove. The panel asks for it the same way it asks for anything else.
 	OpLogs = "logs"
 
+	// OpLinkTest measures the path one of this server's tunnels dials out over.
+	//
+	// It exists because the measurement can only be taken where the dialling
+	// happens, and that is usually not the machine the panel runs on. An Iran
+	// panel manages the fleet and holds the listening half of every reverse
+	// tunnel; the half with a peer address to measure is on a server in that
+	// fleet. Without this the panel could only say "not from here", which is
+	// true and useless when it has a shell on the machine where it can be done.
+	OpLinkTest = "linktest"
+
 	// OpDelete removes one tunnel from this server: its service, its unit and
 	// its configuration, exactly as the CLI's delete does.
 	//
@@ -130,6 +140,30 @@ type Info struct {
 	// wrong.
 	Distro string `json:"distro,omitempty"`
 	Uptime string `json:"uptime,omitempty"`
+
+	// What the machine is doing right now.
+	//
+	// The card showed what a server is and not what it is doing, so a node
+	// under load looked exactly like an idle one. These are read on the far
+	// machine when the panel asks, which is the only place they can be read at
+	// all — this panel cannot see another server's processor.
+	CPUPercent float64 `json:"cpuPercent,omitempty"`
+	CPUCores   int     `json:"cpuCores,omitempty"`
+	MemPercent float64 `json:"memPercent,omitempty"`
+	MemUsed    uint64  `json:"memUsed,omitempty"`
+	MemTotal   uint64  `json:"memTotal,omitempty"`
+
+	// Where the machine is, as the machine itself sees it.
+	//
+	// The panel used to work this out by looking up the peer's address, and on
+	// an Iran server that lookup goes to providers the route does not reach —
+	// so it returned nothing, and every card showed a dot where a flag belongs
+	// and a dash where a location belongs. A managed server is outside that
+	// route by definition, so it can answer for itself, and the panel is told
+	// rather than guessing.
+	Country string `json:"country,omitempty"` // ISO code, for the flag
+	City    string `json:"city,omitempty"`
+	ISP     string `json:"isp,omitempty"`
 }
 
 // LogsRequest asks for one tunnel's journal on the far server.

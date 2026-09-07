@@ -135,7 +135,12 @@ export const speedRun = body => post('/api/speedtest', body);
    other machine, and reading it used to mean logging into it. */
 export const logs = async (name, end) => {
   const url = '/api/logs?name=' + encodeURIComponent(name) + (end === 'peer' ? '&end=peer' : '');
-  const r = await fetch(url, { cache: 'no-store' });
+  // at(), like every other call here. It read the route directly and so asked
+  // the root of the origin, which is the one address the panel does not answer
+  // — every Logs button opened on "404 page not found", both ends of every
+  // tunnel, and the viewer sat on "Reading" for a request that had already
+  // failed.
+  const r = await fetch(at(url), { cache: 'no-store' });
   if (!r.ok) throw new Error(await r.text() || r.statusText);
   return r.text();
 };

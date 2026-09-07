@@ -587,6 +587,26 @@ func gatherTunnels(run node.Runner) []TunnelInfo {
 				if info.State == "online" && resolvable && !datagram && info.Ping < 0 {
 					info.State = "offline"
 				}
+				// Geo is a lookup against providers this machine may not be
+				// able to reach — on an Iran server it usually cannot — and
+				// when it fails the card shows a dot where a flag belongs and
+				// a dash where a location belongs. A managed server holding
+				// the other end is outside that route and answers for itself,
+				// so ask it rather than guessing again.
+				if paired && (info.PeerCountry == "" || info.PeerLocation == "") {
+					if n, ok := node.Find(pair.Node); ok {
+						if info.PeerCountry == "" {
+							info.PeerCountry = n.Info.Country
+						}
+						if info.PeerLocation == "" {
+							info.PeerLocation = strings.TrimSpace(
+								strings.TrimSuffix(n.Info.City+", "+n.Info.Country, ", "))
+						}
+						if info.PeerISP == "" {
+							info.PeerISP = n.Info.ISP
+						}
+					}
+				}
 				if d := health[t.Name].ServiceDown; d != nil && info.State == "online" {
 					info.ServiceDown = health[t.Name].Detail
 				}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/backpack/backpack/internal/manage"
 	"github.com/backpack/backpack/internal/node"
@@ -541,5 +542,90 @@ func TestAnUpgradeThatDoesNotHelpSaysSoInOneSentence(t *testing.T) {
 	}
 	if lines := strings.Count(strings.TrimSpace(said), "\n"); lines > 1 {
 		t.Errorf("the failure is %d lines long:\n%s", lines+1, said)
+	}
+}
+
+// The fleet page keeps a server's own account of itself current.
+//
+// What a managed server says about itself — its version, its uptime, and now
+// its processor and memory — was written down when it was added and rewritten
+// only when somebody upgraded or refreshed it by hand. Half of that is a
+// reading rather than a fact: a card showing 4% processor from an hour ago,
+// labelled as now, is worse than one showing nothing.
+func TestTheFleetPageRefreshesWhatEachServerReports(t *testing.T) {
+	isolateFleet(t)
+	s := newFleetServer()
+	t.Cleanup(s.nodes.stop)
+
+	f := newFake()
+	f.up["germany"] = true
+	f.answers[node.OpHello] = node.Info{Version: "v1.7.7.5", CPUPercent: 41, MemPercent: 62}
+	withFleet(s, f)
+
+	if w := post(t, s, "action=add&name=germany&host=203.0.113.9&user=root&password=x"); w.Code != http.StatusOK {
+		t.Fatalf("add: %d %s", w.Code, w.Body.String())
+	}
+
+	// Fresh: the add just asked, so a listing straight afterwards must not ask
+	// again — a page that re-read every card on every poll would put a round
+	// trip per server into every few seconds.
+	before := countCalls(f, "germany:"+node.OpHello)
+	if w := getNodes(t, s); w.Code != http.StatusOK {
+		t.Fatalf("list: %d", w.Code)
+	}
+	if got := countCalls(f, "germany:"+node.OpHello); got != before {
+		t.Errorf("a listing right after the add asked the server again (%d → %d)", before, got)
+	}
+
+	// Stale: age the record past the window and it has to ask.
+	agePastInfoTTL(t, "germany")
+	if w := getNodes(t, s); w.Code != http.StatusOK {
+		t.Fatalf("list: %d", w.Code)
+	}
+	if got := countCalls(f, "germany:"+node.OpHello); got <= before {
+		t.Error("a stale record was served as current — the card would show a " +
+			"processor reading from whenever the server was added")
+	}
+}
+
+func getNodes(t *testing.T, s *server) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.handleNodes(w, httptest.NewRequest("GET", "/api/nodes", nil))
+	return w
+}
+
+func countCalls(f *fakeRunner, want string) int {
+	n := 0
+	for _, c := range f.calls {
+		if c == want {
+			n++
+		}
+	}
+	return n
+}
+
+// agePastInfoTTL rewinds when a server last reported, so the next listing
+// treats what is stored as old.
+func agePastInfoTTL(t *testing.T, name string) {
+	t.Helper()
+	raw, err := os.ReadFile(node.StorePath)
+	if err != nil {
+		t.Fatalf("reading the fleet: %v", err)
+	}
+	var store struct {
+		Nodes []map[string]any `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &store); err != nil {
+		t.Fatalf("fleet file: %v", err)
+	}
+	for _, n := range store.Nodes {
+		if s, _ := n["name"].(string); strings.EqualFold(s, name) {
+			n["lastSeen"] = time.Now().Add(-time.Hour).Unix()
+		}
+	}
+	out, _ := json.Marshal(store)
+	if err := os.WriteFile(node.StorePath, out, 0600); err != nil {
+		t.Fatalf("writing the fleet: %v", err)
 	}
 }

@@ -57,6 +57,70 @@ claimed against what was true.
 
 ### Fixed
 
+- **The panel's Logs never opened.** Every Logs button answered "404 page not
+  found", on both ends of every tunnel, and the viewer sat on "Reading" for a
+  request that had already failed — which is also why logs looked stale, why
+  switching to another server showed nothing, and why what had been on screen
+  disappeared. One cause: the logs call built its own URL and asked for it at
+  the root of the origin, which is the one address the panel does not answer.
+
+- **"too many segments" was explained wrongly, and confidently.** The log
+  explainer matched the phrase and nothing else, so it told an operator on
+  1.7.7.5 to "update to 1.7.5 or later" — install something older than what they
+  were running — and reported a failing layer-3 read on a TCP reverse tunnel,
+  which has no layer-3 read. An explanation now has to say what must be true of
+  the tunnel and the version before it is offered, and when nothing fits, the
+  panel says nothing.
+
+- **The Add form did not send the preset it was showing.** One button carries
+  `on` in the markup, so the form opens with Balance visibly chosen — but the
+  choice was only recorded when somebody pressed one. Accepting what was on
+  screen wrote a tunnel with no preset at all, and the edit dialog then read an
+  empty value and fell back to whichever option the preview was drawn with. The
+  two screens disagreed about a tunnel and neither was wrong: nothing had been
+  recorded either way.
+
+- **Close did nothing on Alerts, Health check and Speed test.** The preview
+  called its close function `cl`, the binding only recognised names beginning
+  "close", and so the cross in the header worked while the button actually
+  labelled Close did not.
+
+- **The Servers page threw "behind is not defined" on Refresh.** A call left
+  behind when the banner it painted was removed.
+
+- **Country and location were blank on every tunnel card.** They came from a
+  lookup against providers an Iran server cannot reach, so it returned nothing
+  and the card showed a dot where a flag belongs and a dash where a location
+  belongs. A managed server is outside that route by definition and answers for
+  itself now; failing that, the card shows the address rather than a dash.
+
+- **A server card showed what a machine is, never what it is doing.** What it
+  reported was written down when it was added and rewritten only on an upgrade
+  or a manual refresh, so version and uptime were frozen at that moment. The
+  fleet page asks again when what it holds is more than a few seconds old.
+
+- **The metrics screen ran its headline figures to the edge.** Carrying now,
+  Peak in the day and Up last 24 hours sat directly in the dialog body with no
+  gutter, while every heading, chart and table around them was inset.
+
+### Added
+
+- **Real-time processor and memory on each server card.** Read on that machine
+  when the panel asks — nothing here can see another server's processor — and
+  coloured at 75% and 90%.
+
+- **The link test runs on the server that can take it.** It measures the path a
+  tunnel dials out over, and only the dialling end has one; an Iran panel holds
+  the listening half of every reverse tunnel, so it refused — while holding a
+  root shell on the machine that could have answered. When the tunnel is linked
+  to a managed server, the panel asks that server and labels the reading with
+  where it was taken.
+
+- **Editing a server happens inside its own card.** It used to insert a separate
+  form after the card, and another one on every press of Edit, so a server could
+  end up with several open forms disagreeing about its address. It is one panel
+  per server, on the same surface as the remove confirmation beside it.
+
 - **Every traffic figure on the overview was computed from a formatted string.**
   "1.2 TB" parsed back as 1.2, so totals across tunnels were arithmetic on
   numbers that had lost their units — the all-time traffic, the per-tunnel
@@ -162,6 +226,13 @@ claimed against what was true.
   left you somewhere you had not been.
 
 ### Added
+
+- **Every redirect the panel sends lands inside the panel.** Handlers below the
+  base-path wrapper see the path with the prefix already removed, so a Location
+  built from one — `/login`, `/` — pointed at the root of the origin, which is
+  now the one place the panel does not answer. Opening the panel bounced to a
+  404 and there was no way in at all. Signing in, signing out and the old
+  `/panel/` address all carry the prefix now.
 
 - **A four-part version is compared on all four parts.** Versions were read as
   three numbers, so `1.7.7.5` parsed as `[1 7 7]` — the fourth component fell

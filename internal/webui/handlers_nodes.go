@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/backpack/backpack/internal/manage"
 	"github.com/backpack/backpack/internal/node"
@@ -65,6 +66,15 @@ func (f *fleet) get() node.Runner {
 	defer f.mu.Unlock()
 	return f.run
 }
+
+// nodeInfoTTL is how long a server's own account of itself stands for.
+//
+// Short, because half of what it says — processor, memory, uptime — is a
+// reading and not a fact: anything older than a few seconds shown as "now" is
+// a lie the card tells confidently. Long enough that a page left open does not
+// put a round trip per card into every poll; the reachability check beside this
+// keeps its own, longer memory, and this rides the connection that opens.
+const nodeInfoTTL = 12 * time.Second
 
 // nodeView is one row of the fleet screen.
 type nodeView struct {
@@ -133,10 +143,29 @@ func (s *server) writeNodeStateWith(w http.ResponseWriter, extra map[string]any)
 			continue
 		}
 		wg.Add(1)
-		go func(i int, name string) {
+		go func(i int, name string, seen int64) {
 			defer wg.Done()
 			rows[i].Online, rows[i].Why = run.Reachable(name)
-		}(i, n.Name)
+			if !rows[i].Online {
+				return
+			}
+			// What the machine is doing goes stale in seconds.
+			//
+			// The stored answer was only rewritten when a server was added,
+			// upgraded, or refreshed by hand — so the card's version and uptime
+			// were whatever they had been at that moment, and the load figures
+			// would have been a reading from an hour ago presented as now. The
+			// fleet page polls, so it asks again when what it holds is old, on
+			// the connection the reachability check has already opened.
+			if time.Since(time.Unix(seen, 0)) < nodeInfoTTL {
+				return
+			}
+			var info node.Info
+			if err := run.Call(name, node.OpHello, nil, &info); err == nil {
+				_ = node.NoteInfo(name, info)
+				rows[i].Info = info
+			}
+		}(i, n.Name, n.LastSeen)
 	}
 	wg.Wait()
 

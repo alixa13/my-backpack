@@ -122,8 +122,16 @@ function wire(root, close) {
     const fn = b.dataset.fn;
     const args = (b.dataset.args || '').split(',').map(a => a.trim().replace(/^['"]|['"]$/g, ''));
 
-    /* closeAdd, closeEd, closeLogs, closeDetails … all mean the same thing. */
-    if (/^close/i.test(fn)) { close(); return; }
+    /* closeAdd, closeEd, closeLogs, closeDetails … all mean the same thing,
+       and so does cl.
+     *
+     * cl('scAl') was the preview's own name for it, on the footer Close of
+     * every dialog in monitor.html — Alerts, Health check, Speed test. It does
+     * not begin with "close", so it fell through this and those buttons did
+     * nothing at all: the cross in the header worked, because that is a
+     * button.x and is bound above, and the button actually labelled Close did
+     * not. */
+    if (/^close/i.test(fn) || fn === 'cl') { close(); return; }
 
     if (fn === 'tab') {
       const want = args[1] || args[0];

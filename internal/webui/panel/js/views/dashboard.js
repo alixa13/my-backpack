@@ -147,7 +147,12 @@ ${field(t, idx)}
     <div class="fl">${flag(t.peerCountry) || flag(t.country) || '·'}</div>
     <div class="id">
       <b>${esc(t.name)}</b>
-      <small>${esc([t.peerLocation, t.peerISP].filter(Boolean).join(' · ') || '—')}</small>
+      <!-- The address is the fallback, not a dash. A location comes from a
+           lookup that can fail — and when it does, the one thing this card can
+           always say about the far end is where it is, which is more use than
+           a line saying nothing. -->
+      <small>${esc([t.peerLocation, t.peerISP].filter(Boolean).join(' · ')
+                || (t.addr || '').split(':')[0] || '—')}</small>
     </div>
     ${st ? `<div class="vw" role="group" aria-label="Chart shape">
       <button data-view="curve" class="${view === 'curve' ? 'on' : ''}" title="Line">${VIEW.curve}</button>

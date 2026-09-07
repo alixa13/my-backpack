@@ -151,8 +151,14 @@ body[data-t="light"]{background:#f2f2f2;color:#0a0a0a;
   vector-effect:non-scaling-stroke}
 .dlg .chartbox .tk{font-size:9.5px;fill:var(--dim)}
 
-/* One figure a row, divided, each arriving a beat after the one above. */
-.dlg .mrows{margin:14px 0 4px}
+/* One figure a row, divided, each arriving a beat after the one above.
+ *
+ * The 18px is the gutter every other block on this screen already keeps — the
+ * section headings, the chart above these rows, its legend, the tables below.
+ * These three sat directly in the body with none, so the one part of the screen
+ * that is pure reading ran edge to edge while everything around it was inset,
+ * and the figures looked pushed into the corners of the dialog. */
+.dlg .mrows{margin:14px 0 4px;padding:0 18px}
 .dlg .mrow{display:flex;align-items:center;gap:10px;padding:13px 0;
   border-top:1px solid var(--ln)}
 .dlg .mrow:first-child{border-top:0}

@@ -344,3 +344,49 @@
   .panel .mp-map line,.panel .mp-map .bl rect,.panel .mp-map .pin{animation:none!important;
     stroke-dashoffset:0!important;opacity:1!important;transform:none!important}
 }
+
+/* What the machine is doing right now.
+ *
+ * Two bars under the facts strip, on the same grid: the card said which
+ * Backpack and how long up — facts that hold all week — and nothing about load,
+ * so a node at 95% looked exactly like an idle one. */
+.panel .mp-load{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.panel .mp-m{--mm:var(--ok);display:flex;flex-direction:column;gap:5px;min-width:0}
+.panel .mp-m.warm{--mm:var(--wr)}
+.panel .mp-m.hot{--mm:var(--er)}
+.panel .mp-mh{display:flex;align-items:baseline;gap:6px}
+.panel .mp-mh span{font-size:9.5px;font-weight:640;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--dim)}
+.panel .mp-mh b{margin-left:auto;font-size:12px;font-weight:660;
+  font-variant-numeric:tabular-nums;color:var(--tx)}
+.panel .mp-bar{height:4px;border-radius:3px;background:var(--sunk);overflow:hidden}
+.panel .mp-bar i{display:block;height:100%;border-radius:3px;background:var(--mm);
+  transition:width .5s cubic-bezier(.32,.72,0,1),background .3s ease}
+.panel .mp-m em{font-size:10px;font-style:normal;color:var(--dim);
+  font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Editing a server, inside its own card.
+ *
+ * The same surface as the remove confirmation beside it — an absolutely
+ * positioned layer over the card, shown by a class — so the two read as one
+ * behaviour rather than two features. It used to be a separate form inserted
+ * after the card: a differently shaped box that broke the row, took the
+ * server's own context away from the thing being changed, and appeared again
+ * on every press of Edit. */
+.panel .mp7 .ed-l{display:none;position:absolute;inset:0;z-index:4;border-radius:27px;
+  background:var(--s1);flex-direction:column;gap:12px;padding:20px 22px;overflow-y:auto}
+.panel .mp7.ed7 .ed-l{display:flex}
+.panel .mp7 .ed-h b{display:block;font-size:13px;font-weight:640;letter-spacing:-.01em}
+.panel .mp7 .ed-h span{display:block;margin-top:3px;font-size:11px;color:var(--dim)}
+.panel .mp7 .ed-g{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.panel .mp7 .ed-g .wide{grid-column:1/-1}
+.panel .mp7 .ed-g label{display:flex;flex-direction:column;gap:5px;min-width:0;
+  font-size:9.5px;font-weight:640;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+.panel .mp7 .ed-g input{height:34px;padding:0 11px;border-radius:9px;min-width:0;
+  border:1px solid var(--ln);background:var(--sunk);color:var(--tx);
+  font:inherit;font-size:12.5px;letter-spacing:normal;text-transform:none;
+  transition:border-color .18s ease,background .18s ease}
+.panel .mp7 .ed-g input:focus{outline:none;border-color:color-mix(in srgb,var(--ac) 55%,transparent);
+  background:var(--s2)}
+.panel .mp7 .ed-n{font-size:10.5px;line-height:1.55;color:var(--dim)}
+.panel .mp7 .ed-f{display:flex;gap:8px;margin-top:auto;padding-top:4px}

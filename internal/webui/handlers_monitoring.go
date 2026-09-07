@@ -8,6 +8,7 @@ import (
 
 	"github.com/backpack/backpack/internal/alerthist"
 	"github.com/backpack/backpack/internal/manage"
+	"github.com/backpack/backpack/internal/node"
 	"github.com/backpack/backpack/internal/tunhist"
 )
 
@@ -60,26 +61,9 @@ func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 // POST starts it, GET polls for the outcome. One at a time is plenty; the
 // numbers are only meaningful when the probes are not competing.
 
-type linkTestResult struct {
-	Name     string   `json:"name"`
-	Target   string   `json:"target"`
-	Sent     int      `json:"sent"`
-	Received int      `json:"received"`
-	MinMs    int      `json:"minMs"`
-	AvgMs    int      `json:"avgMs"`
-	MaxMs    int      `json:"maxMs"`
-	JitterMs int      `json:"jitterMs"`
-	LossPct  float64  `json:"lossPct"`
-	Usable   bool     `json:"usable"`
-	Error    string   `json:"error,omitempty"`
-	RecLabel string   `json:"recLabel,omitempty"`
-	RecWhy   []string `json:"recWhy,omitempty"`
-	Caveats  []string `json:"caveats,omitempty"`
-	// RecFEC is the parity ratio ("data:parity") recommended when the pick is a
-	// KCP transport, sized to the measured loss. Empty otherwise.
-	RecFEC    string `json:"recFEC,omitempty"`
-	RecFECWhy string `json:"recFECWhy,omitempty"`
-}
+// linkTestResult is manage's, so a measurement taken here and one taken on a
+// managed server are the same shape all the way to the browser.
+type linkTestResult = manage.LinkTestResult
 
 var linkTest = struct {
 	mu      sync.Mutex
@@ -103,16 +87,34 @@ func (s *server) handleLinkTest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unknown tunnel", http.StatusBadRequest)
 			return
 		}
-		// The link is measured from the side that dials out. A server tunnel
-		// has no address to probe, and probing a datagram tunnel's port over
-		// TCP would report a working tunnel as dead.
-		if t.Role != "client" {
-			http.Error(w, "the link test runs on the client (kharej) side — it is the side that dials out", http.StatusBadRequest)
-			return
-		}
-		if manage.IsDatagram(t.Transport) {
-			http.Error(w, "a UDP-based tunnel cannot be probed over TCP — its metrics (loss, FEC repairs) are the honest measure of this link", http.StatusBadRequest)
-			return
+		// The measurement is taken where the dialling happens.
+		//
+		// On this machine that is a client-role tunnel. A server-role one has
+		// no address to probe from here — but its other half does, and when
+		// that half is on a server this panel manages, the panel asks it
+		// rather than declining. Refusing while holding a shell on the machine
+		// that could answer is the shape this used to have.
+		runOn := ""
+		if can, why := manage.LinkTestable(t); !can {
+			pair, paired := manage.PairFor(name)
+			hub := s.nodes.get()
+			switch {
+			case t.Role == "client":
+				// Datagram, or another reason no machine can help with.
+				http.Error(w, why, http.StatusBadRequest)
+				return
+			case !paired:
+				http.Error(w, why+". Link this tunnel to the server holding its other "+
+					"end — its own menu, Link to a server — and the panel can run it there.",
+					http.StatusBadRequest)
+				return
+			case hub == nil || !hub.IsOnline(pair.Node):
+				http.Error(w, why+", and "+pair.Node+", which holds the end that does, "+
+					"could not be reached.", http.StatusBadGateway)
+				return
+			default:
+				runOn = pair.Node
+			}
 		}
 
 		linkTest.mu.Lock()
@@ -124,8 +126,29 @@ func (s *server) handleLinkTest(w http.ResponseWriter, r *http.Request) {
 		linkTest.running, linkTest.name, linkTest.result = true, name, nil
 		linkTest.mu.Unlock()
 
+		peerName := ""
+		if runOn != "" {
+			if p, ok := manage.PairFor(name); ok {
+				peerName = p.PeerName
+			}
+			if peerName == "" {
+				peerName = name
+			}
+		}
 		go func() {
-			res := runLinkTest(t)
+			var res linkTestResult
+			if runOn == "" {
+				res = manage.MeasureLink(t)
+			} else {
+				// Taken on the machine that dials, and labelled with it: a
+				// latency figure without the place it was measured from is a
+				// number about somebody else's path.
+				if err := s.nodes.get().Call(runOn, node.OpLinkTest,
+					node.NameRequest{Name: peerName}, &res); err != nil {
+					res = linkTestResult{Name: name, Error: err.Error()}
+				}
+				res.Name, res.RanOn = name, runOn
+			}
 			linkTest.mu.Lock()
 			linkTest.running, linkTest.result = false, &res
 			linkTest.mu.Unlock()
@@ -135,35 +158,6 @@ func (s *server) handleLinkTest(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-func runLinkTest(t manage.Tunnel) linkTestResult {
-	q := manage.ProbePath(t.Addr)
-	res := linkTestResult{
-		Name:     t.Name,
-		Target:   q.Target,
-		Sent:     q.Sent,
-		Received: q.Received,
-		MinMs:    int(q.Min / time.Millisecond),
-		AvgMs:    int(q.Avg / time.Millisecond),
-		MaxMs:    int(q.Max / time.Millisecond),
-		JitterMs: int(q.Jitter / time.Millisecond),
-		LossPct:  q.LossPercent(),
-		Usable:   q.Usable(),
-	}
-	if q.Err != nil {
-		res.Error = q.Err.Error()
-		return res
-	}
-	rec := manage.RecommendTransport(q, t.Transport)
-	res.RecLabel = rec.Label
-	res.RecWhy = rec.Why
-	res.Caveats = rec.Caveats
-	if rec.FEC.Set() {
-		res.RecFEC = rec.FEC.Ratio()
-		res.RecFECWhy = rec.FEC.Why
-	}
-	return res
 }
 
 // --- long-term history -------------------------------------------------------

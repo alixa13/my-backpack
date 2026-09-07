@@ -37,6 +37,26 @@ export function addView(ctx) {
       const chosen = { side: 'server', direction: 'reverse', transport: null,
                        family: 0, carrier: 'pck', preset: null };
 
+      /* The preset the form is already showing counts as chosen.
+       *
+       * It started as null and was only filled when somebody pressed one of
+       * the buttons — but one of them is marked `on` in the markup, so the
+       * form opens with Balance visibly selected. Accepting what is on screen
+       * therefore sent no preset at all, and the tunnel was written without
+       * one: the config had no preset line, the edit dialog read back an empty
+       * value, and its menu fell to whichever option the preview was drawn
+       * with. What the operator saw when they made the tunnel and what they
+       * saw when they edited it disagreed, and neither was wrong about the
+       * other — nothing had been recorded either way.
+       *
+       * Read from the markup rather than hard-coded, so the default is
+       * whichever button carries `on`, and it stays right if that changes. */
+      const markedPreset = () => {
+        const b = root.querySelector('.rp.on:not([hidden])') || root.querySelector('.rp:not([hidden])');
+        return (b?.querySelector('.key2, .k3')?.textContent || b?.dataset.pre || '')
+          .trim().toLowerCase() || null;
+      };
+
       const show = (sel, on) => root.querySelectorAll(sel)
         .forEach(n => { n.hidden = !on; });
 
@@ -103,6 +123,11 @@ export function addView(ctx) {
             root.querySelector('.rp:not([hidden])')?.classList.add('on');
           }
         });
+        /* Whatever is marked is what will be sent. The `on` class is what the
+           operator can see, so it is the one source of truth here — and it is
+           re-read after the list changes, because Throughput disappearing moves
+           the selection and the payload has to follow the screen. */
+        chosen.preset = markedPreset();
       }
 
       /* The variants come from /api/tunnel/options, so a transport added to the

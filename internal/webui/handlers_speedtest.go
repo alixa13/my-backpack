@@ -117,8 +117,23 @@ func (s *server) handleSpeedTestRun(w http.ResponseWriter, r *http.Request) {
 		case started != "":
 			msg += " — a receiver was started on " + started + " for this, so the far end was ready"
 		default:
-			msg += " — check that the receiver is running on the other server " +
-				"(sudo backpack → Manage → Speed Test → Receive)"
+			// The advice depends on whether this panel could have done it.
+			//
+			// Sending an operator to a terminal on another server is the second
+			// pass the fleet exists to remove — and when that server is in the
+			// fleet the panel starts the receiver itself, which is the branch
+			// above. What is left is a tunnel whose other end this panel does
+			// not know about, and the fix for that is to tell it, not to go and
+			// run a command by hand.
+			if _, paired := manage.NodeFor(req.Name); paired {
+				msg += " — the receiver could not be started on the other server for this run"
+			} else {
+				msg += " — this panel does not know which server holds the other end of " +
+					"this tunnel, so it could not start the receiver there. Link it from " +
+					"the tunnel's own menu (Link to a server), and the panel will do this " +
+					"itself. Until then, start it by hand on that machine: " +
+					"sudo backpack → Manage → Speed Test → Receive"
+			}
 		}
 		http.Error(w, msg, http.StatusBadGateway)
 		return

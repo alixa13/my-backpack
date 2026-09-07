@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/backpack/backpack/internal/app"
+	"github.com/backpack/backpack/internal/geo"
 	"github.com/backpack/backpack/internal/manage"
 	"github.com/backpack/backpack/internal/sysstat"
 )
@@ -109,6 +110,20 @@ func Execute(req Request) Response {
 			lines = 150
 		}
 		return okBody(LogsResult{Name: lr.Name, Text: manage.Logs(lr.Name, lines)})
+
+	case OpLinkTest:
+		var nr NameRequest
+		if err := json.Unmarshal(req.Body, &nr); err != nil {
+			return failf("malformed link test request")
+		}
+		t, ok := manage.Find(nr.Name)
+		if !ok {
+			return failf("no tunnel named %q on this server", nr.Name)
+		}
+		if can, why := manage.LinkTestable(t); !can {
+			return failf("%s", why)
+		}
+		return okBody(manage.MeasureLink(t))
 
 	case OpDelete:
 		var nr NameRequest
@@ -276,7 +291,7 @@ func LocalInfo() Info {
 	host, _ := os.Hostname()
 	v4, v6 := cachedAddrs()
 	m := sysstat.Get()
-	return Info{
+	i := Info{
 		Hostname: host,
 		Version:  app.Version,
 		OS:       runtime.GOOS,
@@ -285,7 +300,22 @@ func LocalInfo() Info {
 		IPv6:     v6,
 		Distro:   m.OS,
 		Uptime:   sysstat.HumanDuration(m.Uptime),
+
+		CPUPercent: m.CPUPercent,
+		CPUCores:   m.CPUCores,
+		MemPercent: m.MemPercent,
+		MemUsed:    m.MemUsed,
+		MemTotal:   m.MemTotal,
 	}
+	// Where this machine is, looked up here rather than by the panel. geo
+	// caches for six hours, so the poll behind this costs one request a
+	// quarter-day and the rest are memory.
+	if v4 != "" {
+		if g := geo.Lookup(v4); g != nil {
+			i.Country, i.City, i.ISP = g.Code, g.City, g.ISP
+		}
+	}
+	return i
 }
 
 func localTunnels() []TunnelState {

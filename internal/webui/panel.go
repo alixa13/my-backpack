@@ -86,5 +86,5 @@ func (s *server) handleOldPanelPath(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Fragment != "" {
 		target += "#" + r.URL.Fragment
 	}
-	http.Redirect(w, r, target, http.StatusMovedPermanently)
+	redirectTo(w, r, target, http.StatusMovedPermanently)
 }

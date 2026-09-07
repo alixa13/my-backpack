@@ -353,7 +353,7 @@ func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			redirectTo(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 		next(w, r)
@@ -399,7 +399,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			limiter.reset(ip)
 			tok := s.sessions.create(ip)
 			http.SetCookie(w, authCookie(r, sessionCookie, tok, sessionTTL))
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			redirectTo(w, r, "/", http.StatusSeeOther)
 			return
 		}
 		limiter.fail(ip)
@@ -418,7 +418,7 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.sessions.destroy(c.Value)
 	}
 	http.SetCookie(w, clearedCookie(r, sessionCookie))
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	redirectTo(w, r, "/login", http.StatusSeeOther)
 }
 
 func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {

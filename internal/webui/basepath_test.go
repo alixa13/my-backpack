@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -211,10 +212,17 @@ func TestThePanelAsksUnderThePathItIsServedFrom(t *testing.T) {
 	if !strings.Contains(js, "dataset.base") {
 		t.Fatal("api.js does not read where the panel is served from")
 	}
-	for _, call := range []string{"fetch(at(path)", "at('/api/tunnel/adopt"} {
-		if !strings.Contains(js, call) {
-			t.Errorf("a request is built without the base path (%q missing)", call)
+	// Every fetch in this file, without exception. Naming the expected calls
+	// one by one is what let one through: api.logs built its own URL and
+	// asked for it directly, so every Logs button opened on a 404 while the
+	// checked calls all still passed.
+	for _, m := range regexp.MustCompile(`fetch\(([^,)]*)`).FindAllStringSubmatch(js, -1) {
+		arg := strings.TrimSpace(m[1])
+		if arg == "" || strings.HasPrefix(arg, "at(") {
+			continue
 		}
+		t.Errorf("api.js calls fetch(%s) — a route asked for without at() goes to "+
+			"the root of the origin, which is the one place the panel does not answer", arg)
 	}
 	// And no view may call fetch on its own, which would bypass this.
 	for _, f := range []string{"js/views/dashboard.js", "js/views/servers.js", "js/views/settings.js"} {
@@ -264,4 +272,71 @@ func TestSettingAPathRefusesWhatItCannotServe(t *testing.T) {
 			t.Errorf("%q would be accepted, and it is not a path segment", bad)
 		}
 	}
+}
+
+// Every redirect the panel sends has to land inside the panel.
+//
+// This is the bug that made the panel look like it would not open at all.
+// Handlers below withBasePath see stripped paths, so they name routes the way
+// they are registered — "/login", "/" — and a Location built from one of those
+// is an address at the root of the origin, which is the one place the panel now
+// answers nowhere. Opening it bounced to /login and 404'd; there was no way in.
+func TestEveryRedirectStaysInsideThePanel(t *testing.T) {
+	srv := &server{sessions: newSessionStore(), nodes: &fleet{}}
+	const base = "/x7Kq2p"
+
+	// Each of these is a redirect a browser follows on the way in or out.
+	for _, tc := range []struct {
+		what   string
+		req    *http.Request
+		handle func(http.ResponseWriter, *http.Request)
+	}{
+		{"opening the panel while signed out", httptest.NewRequest("GET", "/", nil),
+			srv.requireAuth(func(http.ResponseWriter, *http.Request) {})},
+		{"logging out", httptest.NewRequest("GET", "/logout", nil), srv.handleLogout},
+		{"the old /panel/ address", httptest.NewRequest("GET", "/panel/", nil), srv.handleOldPanelPath},
+	} {
+		w := httptest.NewRecorder()
+		withBasePath(base, http.HandlerFunc(tc.handle)).
+			ServeHTTP(w, withPath(tc.req, base+tc.req.URL.Path))
+
+		loc := w.Header().Get("Location")
+		if loc == "" {
+			t.Errorf("%s sent no redirect", tc.what)
+			continue
+		}
+		if !strings.HasPrefix(loc, base+"/") {
+			t.Errorf("%s sends the browser to %q, which is outside the panel — "+
+				"the one place it does not answer", tc.what, loc)
+		}
+	}
+}
+
+// Signing in successfully lands on the panel, not on the root.
+func TestSigningInLandsOnThePanel(t *testing.T) {
+	srv := &server{sessions: newSessionStore(), nodes: &fleet{}}
+	const base = "/x7Kq2p"
+
+	form := strings.NewReader("password=" + srv.password())
+	r := httptest.NewRequest("POST", base+"/login", form)
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	w := httptest.NewRecorder()
+	withBasePath(base, http.HandlerFunc(srv.handleLogin)).ServeHTTP(w, r)
+
+	// Whether the password matched is not the point — what matters is that when
+	// it does, the Location is inside the panel. A wrong password renders the
+	// page instead, which is also correct.
+	if loc := w.Header().Get("Location"); loc != "" && !strings.HasPrefix(loc, base+"/") {
+		t.Errorf("signing in sends the browser to %q, outside the panel", loc)
+	}
+}
+
+// withPath rewrites a request's path, for driving the wrapper directly.
+func withPath(r *http.Request, path string) *http.Request {
+	u := *r.URL
+	u.Path = path
+	r2 := *r
+	r2.URL = &u
+	return &r2
 }

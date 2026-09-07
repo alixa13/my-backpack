@@ -17,6 +17,7 @@ import { toast, oops } from '../ui/toast.js';
 import { confirmBox } from '../ui/confirm.js';
 import * as api from '../api.js';
 import * as store from '../store.js';
+import { bytes } from '../lib/format.js';
 
 const ago = ts => {
   if (!ts) return 'never';
@@ -190,7 +191,6 @@ export function serversView(ctx) {
     $('#nCount', root).textContent = String(nodes.length);
 
     reconcile(nodes);
-    behind(nodes);
 
     const dock = $('#dock-s');
     if (dock) dock.textContent = nodes.length ? String(nodes.length) : '';
@@ -260,6 +260,24 @@ export function serversView(ctx) {
           fact7('Uptime', dash(i.uptime)),
         ]),
 
+        /* What the machine is doing, not only what it is.
+         *
+         * The card said which Backpack and how long up — two things that are
+         * true all week — and nothing at all about load, so a node at 95% and
+         * an idle one were the same card. These are read on that machine when
+         * the panel asks it; nothing here can see another server's processor.
+         *
+         * Shown only when it answered. A meter drawn at zero for a server that
+         * did not reply is a reading, and a wrong one. */
+        n.online && (i.cpuPercent !== undefined || i.memPercent !== undefined)
+          ? el('div', { class: 'mp-load' }, [
+              meter7('Processor', i.cpuPercent,
+                i.cpuCores ? `${i.cpuCores} core${i.cpuCores === 1 ? '' : 's'}` : ''),
+              meter7('Memory', i.memPercent,
+                i.memTotal ? `${bytes(i.memUsed || 0)} / ${bytes(i.memTotal)}` : ''),
+            ])
+          : null,
+
         el('div', { class: 'mp-rule' }),
       ]),
 
@@ -277,6 +295,19 @@ export function serversView(ctx) {
         el('button', { class: 'btn7 warn', text: 'Remove' }),
       ]),
     ]);
+
+    /* Editing happens inside the card.
+     *
+     * It used to insert a separate form after it: a second, differently shaped
+     * card that broke the row and took the server's own context away from the
+     * thing being edited. Worse, every press of Edit inserted another one, so a
+     * server could end up with four open forms disagreeing about its address.
+     *
+     * It is built once, with the card, and shown by a class — the same way the
+     * remove confirmation beside it works, which is what makes the two read as
+     * one surface rather than two features. */
+    const editor = editPanel(n);
+    card.append(editor);
 
     const confirm = el('div', { class: 'cf7' }, [
       el('p', { html: `Stop managing <b>${esc(n.name)}</b>? ${builtThere(n)} — this panel just loses the way to change them.` }),
@@ -331,9 +362,19 @@ export function serversView(ctx) {
       }
     });
 
-    editB.addEventListener('click', () => openCredentials(n));
 
-    rmB.addEventListener('click', () => card.classList.add('arm7'));
+    editB?.addEventListener('click', () => {
+      /* A toggle, so pressing Edit twice closes what it opened rather than
+         opening a second one. */
+      const open = card.classList.toggle('ed7');
+      card.classList.remove('arm7');
+      if (open) editor.querySelector('input')?.focus();
+    });
+
+    rmB.addEventListener('click', () => {
+      card.classList.add('arm7');
+      card.classList.remove('ed7');
+    });
     const [go, cancel] = confirm.querySelectorAll('button');
     cancel.addEventListener('click', () => card.classList.remove('arm7'));
     go.addEventListener('click', async () => {
@@ -346,53 +387,87 @@ export function serversView(ctx) {
     return card;
   }
 
+  /* One resource, as a labelled bar.
+   *
+   * The bar is the reading and the number beside it is the same reading said
+   * exactly; the caption underneath is what the percentage is a percentage of,
+   * which is the part a bare "78%" leaves out. Above 90 it takes the warning
+   * colour — the point at which a server is about to become somebody's
+   * evening. */
+  const meter7 = (label, pct, caption) => {
+    const v = Math.max(0, Math.min(100, Number(pct) || 0));
+    return el('div', { class: 'mp-m' + (v >= 90 ? ' hot' : v >= 75 ? ' warm' : '') }, [
+      el('div', { class: 'mp-mh' }, [
+        el('span', { text: label }),
+        el('b', { text: v.toFixed(0) + '%' }),
+      ]),
+      el('div', { class: 'mp-bar' }, el('i', { style: `width:${v.toFixed(1)}%` })),
+      caption ? el('em', { text: caption }) : null,
+    ]);
+  };
+
   const fact7 = (k, v, warn) => el('div', { class: 'sv-fact' + (warn ? ' bad7' : '') }, [
     el('span', { text: k }), el('b', { text: v }),
     warn ? el('i', { text: warn }) : null,
   ]);
 
-  /* Changing how a server is reached.
+  /* Changing how a server is reached, inside the card it is about.
    *
    * The password is never sent back to the browser, so this asks for it again
    * rather than showing a field that looks filled in and is not. Leaving it
    * empty keeps the one that is stored, which is what an operator changing only
-   * the address means. */
-  function openCredentials(n) {
-    const box = el('form', { class: 'addsv open7', autocomplete: 'off' }, [
-      el('div', { class: 'asv-h' }, [
-        el('b', { text: `How the panel reaches ${n.name}` }),
+   * the address means.
+   *
+   * Built with the card and shown by a class, so there is exactly one of these
+   * per server however many times Edit is pressed — and it sits over that
+   * server's own card, which is the context the change is being made in.
+   */
+  function editPanel(n) {
+    const box = el('form', { class: 'ed-l', autocomplete: 'off' }, [
+      el('div', { class: 'ed-h' }, [
+        el('b', { text: 'How the panel reaches this server' }),
         el('span', { text: 'Leave the password blank to keep the one already stored.' }),
       ]),
-      el('div', { class: 'asv-g', html:
+      el('div', { class: 'ed-g', html:
         `<label>Address<input name="host" value="${esc(n.host)}" autocomplete="off"></label>
          <label>SSH port<input name="sshPort" type="number" min="1" max="65535" value="${n.sshPort || 22}"></label>
          <label>Username<input name="user" value="${esc(n.user)}" autocomplete="off"></label>
          <label class="wide">New password<input name="password" type="password"
            placeholder="unchanged" autocomplete="new-password"></label>` }),
-      el('div', { class: 'asv-f' }, [
-        el('span', { class: 'asv-note', text: 'Changing the address forgets the host key, as a new machine is entitled to a new one.' }),
-        el('span', { class: 'sp' }),
+      el('div', { class: 'ed-n', text:
+        'Changing the address forgets the host key — a different machine is entitled to a different one.' }),
+      el('div', { class: 'ed-f' }, [
         el('button', { type: 'button', class: 'btn7', text: 'Cancel' }),
         el('button', { type: 'submit', class: 'btn7 solid', text: 'Save' }),
       ]),
     ]);
-    const held = cards.get(n.name);
-    if (!held) return;
-    held.el.after(box);
-    box.querySelector('button').addEventListener('click', () => box.remove());
+
+    const shut = () => box.closest('.mp7')?.classList.remove('ed7');
+    box.querySelector('.ed-f button').addEventListener('click', shut);
     box.addEventListener('submit', async ev => {
       ev.preventDefault();
-      const f = Object.fromEntries(new FormData(box));
-      const btn = box.querySelector('button[type=submit]');
-      btn.disabled = true; btn.textContent = 'Saving…';
+      const save = box.querySelector('button[type=submit]');
+      save.disabled = true; save.textContent = 'Saving…';
+      const f = new FormData(box);
       try {
-        const state = await api.nodeCredentials({ name: n.name, ...f });
-        box.remove();
-        paint(state);
+        paint(await api.nodeCredentials({
+          name: n.name,
+          host: String(f.get('host') || '').trim(),
+          sshPort: String(f.get('sshPort') || '').trim(),
+          user: String(f.get('user') || '').trim(),
+          password: String(f.get('password') || ''),
+        }));
         toast(`${n.name} updated.`);
-      } catch (e) { oops(e); btn.disabled = false; btn.textContent = 'Save'; }
+        shut();
+      } catch (e) {
+        oops(e);
+        save.disabled = false; save.textContent = 'Save';
+      }
     });
+    return box;
   }
+
+
 
   /* ---- the add form ---- */
   addB.addEventListener('click', () => {

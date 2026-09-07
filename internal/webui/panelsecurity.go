@@ -197,7 +197,13 @@ func withBasePath(prefix string, next http.Handler) http.Handler {
 				u.RawPath = strings.TrimPrefix(u.RawPath, prefix)
 			}
 			r2.URL = &u
-			next.ServeHTTP(w, &r2)
+			// Carried on the context so a handler that sends the browser
+			// somewhere can put it back. Every handler below this sees a
+			// stripped path, which is what lets the routes stay as they were —
+			// and it means a Location built from one is an address outside the
+			// panel. See redirectTo.
+			next.ServeHTTP(w, r2.WithContext(
+				context.WithValue(r.Context(), basePathKey{}, prefix)))
 			return
 		}
 		// Everything else. The wording is the stock one on purpose: a panel
@@ -214,4 +220,32 @@ const basePlaceholder = "__BASE_PATH__"
 // leaves every URL in the page exactly as it was written.
 func withBase(page []byte, prefix string) []byte {
 	return bytes.ReplaceAll(page, []byte(basePlaceholder), []byte(prefix))
+}
+
+// The base path this request arrived under.
+type basePathKey struct{}
+
+// requestBase is the prefix the panel is being served under for this request,
+// or "" at the root.
+//
+// Read from the request rather than from disk: it has to be the prefix this
+// request actually came in under, not what the config says now. Those differ
+// for exactly one request after the path is changed — the one that changed it.
+func requestBase(r *http.Request) string {
+	p, _ := r.Context().Value(basePathKey{}).(string)
+	return p
+}
+
+// redirectTo sends the browser to a path inside the panel.
+//
+// Handlers below withBasePath see stripped paths, so they name routes the way
+// they are registered: "/login", "/". A Location built from one of those is an
+// address at the root of the origin, where the panel does not answer — so the
+// browser follows it to a 404 and the panel looks like it will not open.
+//
+// That is what happened: sign-in bounced to /login, the login form posted to a
+// path that was not there, and logging out landed nowhere. Every redirect the
+// panel sends goes through here.
+func redirectTo(w http.ResponseWriter, r *http.Request, path string, code int) {
+	http.Redirect(w, r, requestBase(r)+path, code)
 }
