@@ -158,7 +158,8 @@ export async function linkTestView(ctx) {
       run?.addEventListener('click', async () => {
         run.disabled = true; run.textContent = 'Probing…';
         $$('.c8', root).forEach(c => { c.className = 'c8'; });
-        try { await api.linkTestRun(name); } catch (e) { oops(e); run.disabled = false; return; }
+        try { await api.linkTestRun(name); }
+        catch (e) { oops(e, name); run.disabled = false; return; }
         poll = setInterval(tick, 900);
       });
 

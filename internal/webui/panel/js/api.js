@@ -27,9 +27,19 @@ const BASE = document.documentElement.dataset.base || '';
    the panel actually answers. */
 const at = path => BASE + path;
 
+/* A refusal that has one specific remedy says so in a header, and it is carried
+   on the error rather than read back out of the sentence. The words are for a
+   person; rewording them must not quietly take the button away. */
+async function refusal(r) {
+  const e = new Error(await r.text() || r.statusText);
+  e.fix = r.headers.get('X-Backpack-Fix') || '';
+  e.status = r.status;
+  return e;
+}
+
 async function get(path) {
   const r = await fetch(at(path), { cache: 'no-store' });
-  if (!r.ok) throw new Error(await r.text() || r.statusText);
+  if (!r.ok) throw await refusal(r);
   return r.json();
 }
 
@@ -41,7 +51,7 @@ async function post(path, body) {
     opts.body = JSON.stringify(body);
   }
   const r = await fetch(at(path), opts);
-  if (!r.ok) throw new Error(await r.text() || r.statusText);
+  if (!r.ok) throw await refusal(r);
   const text = await r.text();
   return text ? JSON.parse(text) : {};
 }

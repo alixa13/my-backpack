@@ -12,7 +12,7 @@ import { isUp, stateLabel, stateTone, serviceDown } from '../lib/tstate.js';
 import { bytes, speed, kindLabel, flag } from '../lib/format.js';
 import * as store from '../store.js';
 import * as api from '../api.js';
-import { toast, oops } from '../ui/toast.js';
+import { toast, oops, onFix } from '../ui/toast.js';
 import { confirmBox } from '../ui/confirm.js';
 import { go } from '../router.js';
 
@@ -496,6 +496,12 @@ export function dashboard(ctx) {
     document.removeEventListener('click', closeSheets);
   });
 }
+
+/* The refusal a measurement gives when it does not know where the other end is
+   carries a button, and this is what the button does. Registered here because
+   this is the screen that knows how to link a tunnel; toast.js only has to know
+   that something does. */
+onFix.link = name => { if (name) linkToServer(name).then(() => store.refresh()); };
 
 /* Linking a tunnel to the server that holds its other end.
  *

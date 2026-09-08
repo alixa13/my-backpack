@@ -264,6 +264,9 @@ export function speedView(ctx) {
         } catch (e) {
           show('—', '', 'Failed');
           if (note) note.textContent = e.message || 'The test did not run.';
+          /* When the refusal has one thing that would fix it, offer that thing
+             rather than only describing it. */
+          if (e && e.fix) oops(e, name);
         }
         if (back) back.hidden = false;
         go.disabled = false;

@@ -128,11 +128,11 @@ func (s *server) handleSpeedTestRun(w http.ResponseWriter, r *http.Request) {
 			if _, paired := manage.NodeFor(req.Name); paired {
 				msg += " — the receiver could not be started on the other server for this run"
 			} else {
+				w.Header().Set(fixHeader, fixLinkTunnel)
 				msg += " — this panel does not know which server holds the other end of " +
-					"this tunnel, so it could not start the receiver there. Link it from " +
-					"the tunnel's own menu (Link to a server), and the panel will do this " +
-					"itself. Until then, start it by hand on that machine: " +
-					"sudo backpack → Manage → Speed Test → Receive"
+					"this tunnel, so it could not start the receiver there. Link it to " +
+					"that server and the panel will do this itself. Until then, start it " +
+					"by hand there: sudo backpack → Manage → Speed Test → Receive"
 			}
 		}
 		http.Error(w, msg, http.StatusBadGateway)

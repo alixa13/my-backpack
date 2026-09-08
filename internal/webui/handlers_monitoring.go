@@ -104,9 +104,16 @@ func (s *server) handleLinkTest(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, why, http.StatusBadRequest)
 				return
 			case !paired:
+				// Named in a header as well as in the sentence.
+				//
+				// The panel offers the fix where the refusal happened, and to do
+				// that it has to recognise this one refusal among all of them.
+				// Matching the words would be the same mistake as keying on
+				// "not installed" was: the prose is written for a person, and
+				// rewording it must not silently take the button away.
+				w.Header().Set(fixHeader, fixLinkTunnel)
 				http.Error(w, why+". Link this tunnel to the server holding its other "+
-					"end — its own menu, Link to a server — and the panel can run it there.",
-					http.StatusBadRequest)
+					"end and the panel can run it there.", http.StatusBadRequest)
 				return
 			case hub == nil || !hub.IsOnline(pair.Node):
 				http.Error(w, why+", and "+pair.Node+", which holds the end that does, "+
@@ -295,3 +302,13 @@ func findTunnel(name string) (manage.Tunnel, bool) {
 	}
 	return manage.Tunnel{}, false
 }
+
+// What the panel can offer to do about a refusal.
+//
+// A refusal that has one specific remedy says so in a header, so the page can
+// put that remedy in front of the operator instead of a sentence describing it.
+// The sentence stays — it is what somebody reading a log or a curl sees.
+const (
+	fixHeader     = "X-Backpack-Fix"
+	fixLinkTunnel = "link-tunnel"
+)
