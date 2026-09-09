@@ -427,7 +427,8 @@ func (c *KcpTransport) channelHandler() {
 				// read on a dead tunnel would block forever and the client would
 				// never reconnect. The server heartbeats regularly, so silence
 				// for longer than the keepalive period means the peer is gone.
-				if err := c.state.Conn().SetReadDeadline(time.Now().Add(controlDeadline(c.config.KeepAlive))); err != nil {
+				window := controlDeadline(c.config.KeepAlive)
+				if err := c.state.Conn().SetReadDeadline(time.Now().Add(window)); err != nil {
 					c.logger.Errorf("failed to set control channel deadline: %v", err)
 					go c.Restart()
 					return
@@ -436,7 +437,24 @@ func (c *KcpTransport) channelHandler() {
 				if err != nil {
 					if c.state.Cancel() != nil {
 						if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-							c.logger.Warn("no heartbeat from the server within the keepalive period, reconnecting")
+							// Said as a measurement, because the number is what
+							// separates the two things this can mean.
+							//
+							// "No heartbeat within the keepalive period" reads
+							// as one missed beat. It is not: the window is one
+							// and a half keepalives, and the server sends on its
+							// own shorter timer, so reaching this means several
+							// in a row were lost — a path dropping packets, not
+							// a server that was briefly busy. On a FEC tunnel
+							// that is the first thing to check, because the
+							// parity traffic multiplies what the path has to
+							// carry.
+							c.logger.Warnf("nothing heard from the server for %s — the server "+
+								"heartbeats on a shorter timer than that, so several in a row "+
+								"were lost rather than one being late. That is the path "+
+								"dropping packets. On a FEC tunnel look there first: parity "+
+								"multiplies what the path has to carry. Reconnecting.",
+								window.Round(time.Second))
 						} else {
 							c.logger.Error("failed to read from control channel. ", err)
 						}

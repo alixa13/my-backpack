@@ -105,7 +105,11 @@ func TestPlainListenerCarrierCloserIsANoop(t *testing.T) {
 // need not agree on it, and equalising it fixes nothing. Operators followed it
 // and their tunnels stayed down.
 func TestStartupNotesDoNotClaimMTUMustMatch(t *testing.T) {
+	// Each capture is one tunnel starting. The notes are told once per run, so
+	// without this the second tunnel in this process would be silent — which is
+	// the behaviour under test everywhere else and noise here.
 	capture := func(s KCPSettings) string {
+		resetStartupNotes()
 		var sb strings.Builder
 		s.Logf = func(format string, args ...any) {
 			fmt.Fprintf(&sb, format+"\n", args...)
@@ -117,6 +121,9 @@ func TestStartupNotesDoNotClaimMTUMustMatch(t *testing.T) {
 	base := KCPSettings{MTU: 1350, SndWnd: 1024, RcvWnd: 1024}
 
 	t.Run("the parameters are always reported", func(t *testing.T) {
+		// A fresh tunnel: the notes are told once per run, and each of
+		// these is a run.
+		resetStartupNotes()
 		got := capture(base)
 		for _, want := range []string{"MTU=1350", "FEC=off", "sndwnd=1024"} {
 			if !strings.Contains(got, want) {
@@ -158,4 +165,38 @@ func TestStartupNotesDoNotClaimMTUMustMatch(t *testing.T) {
 func withFEC(s KCPSettings, data, parity int) KCPSettings {
 	s.DataShards, s.ParityShards = data, parity
 	return s
+}
+
+// The startup notes are told once a run, not once a session.
+//
+// They describe the run — every session of one is dialled with the same
+// settings — but they were emitted from the dial, and a KCP client dials a
+// whole pool. So a reconnect printed the parameters and the FEC advice once per
+// pooled session: fifteen identical blocks in the same second, on a tunnel that
+// was already in trouble. The advice is written to be read, and at that volume
+// it is what buries the line saying why the tunnel dropped.
+func TestTheStartupNotesAreToldOncePerRun(t *testing.T) {
+	resetStartupNotes()
+
+	var lines int
+	s := withFEC(KCPSettings{MTU: 1250, SndWnd: 256, RcvWnd: 256}, 10, 3)
+	s.Logf = func(string, ...any) { lines++ }
+
+	// One dial, then the pool behind it.
+	for i := 0; i < 16; i++ {
+		s.logSettings("client")
+	}
+	if lines != 2 {
+		t.Errorf("sixteen sessions produced %d lines, want the 2 this run has to say — "+
+			"a pool rebuild would otherwise bury the reason it was rebuilding", lines)
+	}
+
+	// A genuinely different setting still says so.
+	before := lines
+	s2 := withFEC(KCPSettings{MTU: 1100, SndWnd: 256, RcvWnd: 256}, 10, 3)
+	s2.Logf = s.Logf
+	s2.logSettings("client")
+	if lines <= before {
+		t.Error("a changed MTU was suppressed as a repeat")
+	}
 }

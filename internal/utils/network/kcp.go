@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/xtaci/kcp-go/v5"
 	"golang.org/x/crypto/pbkdf2"
@@ -116,6 +117,44 @@ type pckDiagnoser interface{ PckDiag() string }
 // FEC is the parameter that genuinely must match, and it is worth saying loudly
 // because the failure is total and silent. So the parameters print plainly for
 // everyone, and the advice prints only for the tunnels it applies to.
+// saidOnce keeps the startup notes to one telling each.
+//
+// They describe the run, not the connection — every session of a run is dialled
+// with the same settings — but they were emitted from the dial, and a KCP
+// client dials a whole pool. So a reconnect printed the parameters and the
+// FEC advice once per pooled session: fifteen identical blocks in the same
+// second, on a tunnel that was already having trouble. The advice was written
+// to be read; at that volume it is what buries the line that says why.
+//
+// Keyed by the text, so a genuinely different setting still says so.
+var saidOnce = struct {
+	sync.Mutex
+	seen map[string]bool
+}{seen: map[string]bool{}}
+
+// resetStartupNotes forgets what has been said.
+//
+// The dedup is process-wide, which is right for a tunnel — one run, one telling
+// — and wrong for a test binary, where several tunnels are stood up in one
+// process and the second would be silent. It exists for that, and because
+// global state with no way to clear it is state that cannot be tested.
+func resetStartupNotes() {
+	saidOnce.Lock()
+	saidOnce.seen = map[string]bool{}
+	saidOnce.Unlock()
+}
+
+func sayOnce(logf func(string, ...any), format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	saidOnce.Lock()
+	first := !saidOnce.seen[line]
+	saidOnce.seen[line] = true
+	saidOnce.Unlock()
+	if first {
+		logf("%s", line)
+	}
+}
+
 func (s KCPSettings) logSettings(role string) {
 	if s.Logf == nil {
 		return
@@ -125,7 +164,7 @@ func (s KCPSettings) logSettings(role string) {
 	if fecOn {
 		fec = fmt.Sprintf("%d:%d", s.DataShards, s.ParityShards)
 	}
-	s.Logf("KCP %s parameters: MTU=%d (effective %d) FEC=%s sndwnd=%d rcvwnd=%d",
+	sayOnce(s.Logf, "KCP %s parameters: MTU=%d (effective %d) FEC=%s sndwnd=%d rcvwnd=%d",
 		role, s.MTU, s.effectiveMTU(), fec, s.SndWnd, s.RcvWnd)
 
 	if !fecOn {
@@ -135,7 +174,7 @@ func (s KCPSettings) logSettings(role string) {
 	// things an operator cannot discover any other way: the shard counts are
 	// never negotiated, and the reason a FEC tunnel is the first to fail on a
 	// short path is not visible from the outside.
-	s.Logf("KCP %s: FEC %s is not negotiated — kcp_datashards and kcp_parityshards have to be identical on the other end, or every packet is discarded with nothing further in the log. kcp_mtu does not have to match the other end; it has to fit the path. If this tunnel will not carry traffic, lower kcp_mtu before changing anything else: FEC pads every parity packet out to the largest in its group, so a path that quietly carries small packets can still lose all the full-size ones.",
+	sayOnce(s.Logf, "KCP %s: FEC %s is not negotiated — kcp_datashards and kcp_parityshards have to be identical on the other end, or every packet is discarded with nothing further in the log. kcp_mtu does not have to match the other end; it has to fit the path. If this tunnel will not carry traffic, lower kcp_mtu before changing anything else: FEC pads every parity packet out to the largest in its group, so a path that quietly carries small packets can still lose all the full-size ones.",
 		role, fec)
 }
 

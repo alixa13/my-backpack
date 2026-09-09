@@ -2,7 +2,10 @@
 
 All notable changes to Backpack are documented here.
 
-## v1.7.7.5 — 2026-09-07
+## v1.8.0 — 2026-09-09
+
+> Tagged v1.7.7.5 and v1.7.8 while it was being tested; this is the release.
+
 
 Managed servers are reached over SSH now, and the panel that drives them is the
 only panel. Those are the same change told twice. The old node model was an
@@ -56,6 +59,27 @@ claimed against what was true.
   without understanding what they do to a route.
 
 ### Fixed
+
+- **A refusal that has one remedy now offers it.** Both measurements a tunnel
+  can have — the link test and the speed test — need the server holding its
+  other end, and both refuse when the panel does not know which server that is.
+  The refusal said to go and link it; the action was two screens away, and
+  knowing it exists at all was the hard part. The message carries the button
+  now. The server names the remedy in a header rather than in the sentence, so
+  rewording the prose cannot quietly take the button away.
+
+- **A KCP tunnel's startup notes were printed once per pooled session.** They
+  describe the run, not the connection, but they were emitted from the dial —
+  and a KCP client dials a whole pool. So every reconnect printed the parameters
+  and the FEC advice fifteen times in the same second, on a tunnel that was
+  already in trouble, burying the one line that said why it had reconnected.
+  Once per run now, and again if a setting genuinely changes.
+
+- **"No heartbeat within the keepalive period" said less than it knew.** It
+  reads as one missed beat. The window is one and a half keepalives and the
+  server sends on a shorter timer, so reaching it means several in a row were
+  lost — a path dropping packets, not a slow server. It says so, with the
+  figure, and points at FEC first on a tunnel that has it.
 
 - **The panel's Logs never opened.** Every Logs button answered "404 page not
   found", on both ends of every tunnel, and the viewer sat on "Reading" for a
