@@ -2,6 +2,7 @@ package manage
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strings"
@@ -423,8 +424,16 @@ func askL3Carrier() (string, bool) {
 func askGREKey() uint32 {
 	for {
 		key := tui.PromptInt("Tunnel key (0 for none)", 0)
-		if key >= 0 && key <= 4294967295 {
-			return uint32(key)
+		// Compared as int64, not int.
+		//
+		// The upper bound is 2^32-1, which does not fit an int on a 32-bit
+		// build — so `key <= 4294967295` was a constant overflow and the whole
+		// package refused to compile for 386 and every 32-bit ARM. On a 32-bit
+		// machine the prompt cannot return a number that large anyway; widening
+		// the comparison keeps the check honest on 64-bit without asking the
+		// compiler for something impossible on 32.
+		if k := int64(key); k >= 0 && k <= math.MaxUint32 {
+			return uint32(k)
 		}
 		tui.Error("The key must be between 0 and 4294967295.")
 	}

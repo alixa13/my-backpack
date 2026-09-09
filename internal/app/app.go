@@ -5,6 +5,7 @@ package app
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"runtime"
 )
 
 const (
@@ -98,3 +99,28 @@ func SocksPortForToken(token string) int {
 	// handed out to an outgoing connection.
 	return 20000 + int(binary.BigEndian.Uint32(sum[:4])%20000)
 }
+
+// The architecture a release asset is named for.
+//
+// runtime.GOARCH is not enough on ARM. Every 32-bit ARM build reports "arm"
+// whatever it was compiled for, and the three variants are not interchangeable:
+// a v7 binary on a v5 board is an illegal instruction, not a slow one. So the
+// releases name them apart — armv5, armv6, armv7 — and a binary has to know
+// which of the three it is to ask for its own successor.
+//
+// GOARM is stamped in at link time by the release build (see the Makefile). It
+// is empty for every other architecture, and empty on a plain `go build`, where
+// falling back to "arm" is right: that build was not made by the release
+// pipeline and has no published asset of its own.
+var GOARM = ""
+
+// AssetArch is the architecture part of this build's release asset name.
+func AssetArch() string {
+	if runtime.GOARCH == "arm" && GOARM != "" {
+		return "armv" + GOARM
+	}
+	return runtime.GOARCH
+}
+
+// AssetName is the release archive this build would update itself from.
+func AssetName() string { return "backpack_linux_" + AssetArch() + ".tar.gz" }

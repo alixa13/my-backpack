@@ -60,6 +60,16 @@ claimed against what was true.
 
 ### Fixed
 
+- **The CLI would not compile for any 32-bit target.** The GRE key prompt
+  compared against 2^32-1 as an `int`, which overflows on 386 and every 32-bit
+  ARM, so the whole package was a build error there. Found by building the
+  architectures above for the first time.
+
+- **The release workflow published two archives however many were built.** It
+  listed them by name, so an architecture added to the build would be produced
+  and then left on the runner — no failure, just an asset the release page never
+  carried and an update that 404s on those machines.
+
 - **A refusal that has one remedy now offers it.** Both measurements a tunnel
   can have — the link test and the speed test — need the server holding its
   other end, and both refuse when the panel does not know which server that is.
@@ -128,6 +138,15 @@ claimed against what was true.
   gutter, while every heading, chart and table around them was inset.
 
 ### Added
+
+- **Five more architectures: 386, s390x, and ARM v5, v6 and v7.** The releases
+  carried amd64 and arm64 only. The three 32-bit ARM variants are built and
+  named apart because they are not interchangeable — a v7 binary on a v5 board
+  is an illegal instruction, not a slow one — and each build is stamped with the
+  variant it was compiled for, because `runtime.GOARCH` says "arm" for all
+  three and a binary that could not tell them apart would ask for an asset no
+  release publishes. `install.sh` reads the variant from `uname -m`, falling
+  back to `/proc/cpuinfo` and then to v6, which runs on v6 and v7 both.
 
 - **Real-time processor and memory on each server card.** Read on that machine
   when the panel asks — nothing here can see another server's processor — and

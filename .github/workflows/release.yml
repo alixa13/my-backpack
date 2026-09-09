@@ -69,8 +69,13 @@ jobs:
         with:
           prerelease: ${{ steps.kind.outputs.prerelease }}
           body_path: RELEASE_NOTES.md
+          # Every archive make release produced, by glob rather than by name.
+          #
+          # Listing them one by one is how five of the seven architectures came
+          # to be built and then not published: the build learned about them and
+          # this did not, and nothing failed — the assets simply were not there,
+          # and an update on those machines 404s.
           files: |
-            release/backpack_linux_amd64.tar.gz
-            release/backpack_linux_arm64.tar.gz
+            release/backpack_linux_*.tar.gz
             release/SHA256SUMS
             install.sh

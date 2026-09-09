@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -41,7 +40,7 @@ var localUpdateDirsFn = func() []string {
 // not execute, and the filename is the only place that is visible before it is
 // too late.
 func LocalAssetName() string {
-	return fmt.Sprintf("backpack_linux_%s.tar.gz", runtime.GOARCH)
+	return app.AssetName()
 }
 
 // LocalUpdate is a release archive found on this machine.

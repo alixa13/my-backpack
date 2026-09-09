@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -317,7 +316,7 @@ func pickTag(body string, beta bool) string {
 // downloadAsset fetches the release tar.gz for this architecture into destDir
 // and returns its path. Sources are tried in order.
 func downloadAsset(tag, destDir string, logf func(string)) (string, error) {
-	asset := fmt.Sprintf("backpack_linux_%s.tar.gz", runtime.GOARCH)
+	asset := app.AssetName()
 	url := fmt.Sprintf("%s/releases/download/%s/%s", repoURL(), tag, asset)
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {

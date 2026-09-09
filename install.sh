@@ -51,9 +51,33 @@ if [[ $# -gt 0 ]]; then
   exit 2
 fi
 
+# Which release asset this machine can run.
+#
+# The three 32-bit ARM variants are not interchangeable — a v7 binary on a v5
+# board is an illegal instruction, not a slow one — so uname alone is not
+# enough: it says "armv7l" for the kernel's idea of the CPU, which is usually
+# right, and /proc/cpuinfo's architecture line is the fallback when it is not.
+# When neither is readable, v6 is the safe choice: it runs on v6 and v7 both.
+arm_variant() {
+  case "$(uname -m)" in
+    armv7*) echo 7; return ;;
+    armv6*) echo 6; return ;;
+    armv5*|armv4*) echo 5; return ;;
+  esac
+  case "$(grep -m1 -i '^CPU architecture' /proc/cpuinfo 2>/dev/null)" in
+    *7*) echo 7 ;;
+    *6*) echo 6 ;;
+    *5*) echo 5 ;;
+    *)   echo 6 ;;
+  esac
+}
+
 case "$(uname -m)" in
-  x86_64|amd64) ARCH="amd64" ;;
-  aarch64|arm64) ARCH="arm64" ;;
+  x86_64|amd64)   ARCH="amd64" ;;
+  aarch64|arm64)  ARCH="arm64" ;;
+  i386|i486|i586|i686) ARCH="386" ;;
+  s390x)          ARCH="s390x" ;;
+  armv*|arm)      ARCH="armv$(arm_variant)" ;;
   *) err "Unsupported architecture: $(uname -m)"; exit 1 ;;
 esac
 
