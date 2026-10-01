@@ -47,6 +47,24 @@ const (
 	currentBinaryEnv = "BACKPACK_CURRENT_BINARY"
 )
 
+// newInThisRelease is the set of transports the previous release does not
+// speak at all. allReverseTransports is every transport this build ships, so
+// without this the loop below would hand each of them to the old binary — which
+// rejects an unknown transport at config validation, and the failure would read
+// as a wire break rather than as "that peer has never heard of this transport".
+//
+// There is no cross-version question to ask of a transport with no previous
+// version: nothing older exists to be incompatible with. Such a row is skipped
+// by name, with the reason in the test log, rather than dropped from the loop,
+// so it stays visible and the rest of the matrix keeps its full coverage.
+//
+// When a release ships a new transport, add it here. When the next release
+// ships and the previous binary speaks it, remove it, and the transport joins
+// the cross-version matrix with no other change.
+var newInThisRelease = map[string]bool{
+	"stealth2": true, // stealth with the hardened opening; older peers do not know the name
+}
+
 func TestThePreviousReleaseStillTalksToThisOne(t *testing.T) {
 	prev := os.Getenv(prevBinaryEnv)
 	if prev == "" {
@@ -76,6 +94,9 @@ func TestThePreviousReleaseStillTalksToThisOne(t *testing.T) {
 	} {
 		for _, transport := range allReverseTransports {
 			t.Run(tc.name+"/"+transport, func(t *testing.T) {
+				if newInThisRelease[transport] {
+					t.Skipf("%s is new in this release; the previous release does not speak it", transport)
+				}
 				t.Parallel()
 				runCrossVersionPair(t, tc.server, tc.client, transport)
 			})
