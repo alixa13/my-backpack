@@ -220,14 +220,17 @@ func readMarkedFrame(r io.Reader, key []byte, innerLen int, rf *replayFilter) ([
 		if len(rest) >= maxRest {
 			return nil, errOpeningNoMark
 		}
-		n, err := r.Read(one)
+		n, _ := r.Read(one)
 		if n > 0 {
 			rest = append(rest, one[0])
+			continue
 		}
-		if err != nil {
-			// EOF or read error before a valid mark+MAC: dead port.
-			return nil, errOpeningNoMark
-		}
+		// No byte was produced. Either EOF/read error, or a reader that
+		// returns (0, nil) and makes no progress -- which would otherwise spin
+		// forever without ever tripping the maxOpening bound. Both end the
+		// open: dead port. (A reader that returns bytes alongside io.EOF is
+		// handled by the continue above; the next read yields (0, EOF) here.)
+		return nil, errOpeningNoMark
 	}
 }
 

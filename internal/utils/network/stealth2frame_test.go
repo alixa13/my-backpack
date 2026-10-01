@@ -78,4 +78,60 @@ func TestMarkedFrameReplayRejected(t *testing.T) {
 	}
 }
 
+// The scan is bounded by maxOpening: a stream whose first maxOpening bytes
+// after m contain no valid mark must return an error (the bound fires; no
+// over-read, no unbounded scan, no hang) rather than reading forever.
+func TestMarkedFrameScanBounded(t *testing.T) {
+	key, _ := markKey(frameTok)
+	m := bytes.Repeat([]byte{0x11}, 49)
+	// m followed by maxOpening bytes of zeros: the mark (HMAC output) is not
+	// all-zero, so it never appears in the padding and the bound must fire.
+	wire := append(append([]byte{}, m...), make([]byte, maxOpening)...)
+	if _, err := readMarkedFrame(bytes.NewReader(wire), key, len(m), nil); err == nil {
+		t.Fatal("readMarkedFrame accepted a stream with no mark within maxOpening")
+	}
+}
+
+// writeMarkedFrame must reject an inner message too large to leave room for the
+// mark and MAC, returning an error rather than panicking or writing a
+// malformed (truncated/negative-pad) frame.
+func TestMarkedFrameInnerTooLarge(t *testing.T) {
+	key, _ := markKey(frameTok)
+	m := make([]byte, maxOpening-markLength-macLength+1) // one byte over the limit
+	var buf bytes.Buffer
+	if err := writeMarkedFrame(&buf, key, m); err == nil {
+		t.Fatal("writeMarkedFrame accepted an oversized inner message")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("writeMarkedFrame wrote %d bytes for an oversized message; want 0", buf.Len())
+	}
+}
+
+// zeroProgressReader delivers m, then returns (0, nil) forever: a reader that
+// makes no progress without signalling an error.
+type zeroProgressReader struct {
+	m    []byte
+	seen int
+}
+
+func (z *zeroProgressReader) Read(p []byte) (int, error) {
+	if z.seen < len(z.m) {
+		n := copy(p, z.m[z.seen:])
+		z.seen += n
+		return n, nil
+	}
+	return 0, nil
+}
+
+// A reader that returns (0, nil) after m must fail, not spin: the guard turns
+// no-progress into a failed open. Without the guard this test would hang and
+// fail by timeout.
+func TestMarkedFrameNoProgressReaderFails(t *testing.T) {
+	key, _ := markKey(frameTok)
+	m := bytes.Repeat([]byte{0x22}, 49)
+	if _, err := readMarkedFrame(&zeroProgressReader{m: m}, key, len(m), nil); err == nil {
+		t.Fatal("readMarkedFrame accepted a no-progress reader")
+	}
+}
+
 var _ io.Reader // keep imports stable if a test above is edited

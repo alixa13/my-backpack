@@ -14,8 +14,17 @@ import (
 // filter is therefore bounded in both size and time against, at worst, a
 // compromised-token flood -- not against arbitrary network input.
 const (
-	replayWindow   = 2 * time.Hour // covers epoch E-1..E+1 plus clock skew
-	replayMaxEntry = 4096          // hard bound; oldest evicted when full
+	// replayWindow must outlast the full wall-clock span over which a frame is
+	// accepted, or an entry could be evicted while the same frame is still
+	// acceptable and would then replay as "fresh". A frame labelled with epoch
+	// hour w is accepted whenever the receiver's own clock-hour is in
+	// {w-1, w, w+1}, i.e. across the ~3h span [(w-1)*3600, (w+2)*3600). In the
+	// skew case the first legitimate receipt can be as early as receiver-hour
+	// w-1, so the entry must survive ~3h from first-seen; 4h covers that span
+	// plus margin. (The brief's 2h was an illustrative sketch; the binding
+	// constraint is only that the filter be bounded in time.)
+	replayWindow   = 4 * time.Hour
+	replayMaxEntry = 4096 // hard bound; oldest evicted when full
 )
 
 type replayFilter struct {
