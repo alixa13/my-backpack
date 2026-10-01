@@ -139,14 +139,21 @@ type runner interface {
 }
 
 // stealthMode is the record layer a transport name puts over the TCP tunnel.
+//
+// It is only called with the three transports that share the TCP engine, so
+// every one of them is named here and anything else is a programming error. It
+// panics rather than returning StealthOff for a name it does not know: that
+// would hand a stealth tunnel a plain stream with nothing visibly wrong.
 func stealthMode(tr config.TransportType) transport.StealthMode {
 	switch tr {
+	case config.TCP:
+		return transport.StealthOff
 	case config.STEALTH:
 		return transport.StealthV1
 	case config.STEALTH2:
 		return transport.StealthV2
 	}
-	return transport.StealthOff
+	panic("stealthMode: " + string(tr) + " does not run on the TCP engine")
 }
 
 // startTransport launches one transport under ctx and returns it. Cancelling

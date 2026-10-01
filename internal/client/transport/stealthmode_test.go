@@ -67,3 +67,22 @@ func TestWrapStealthSelectsTheRecordLayerForItsMode(t *testing.T) {
 		})
 	}
 }
+
+// A mode wrapStealth does not know is not plain TCP. If it fell through to
+// returning the connection, a tunnel configured for a layer this code cannot
+// speak would carry its traffic in the clear and look healthy; it has to
+// refuse, and hand back no connection to use.
+func TestWrapStealthRefusesAnUnknownMode(t *testing.T) {
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	defer srv.Close()
+
+	tr := &TcpTransport{config: &TcpConfig{Token: "a-token", DialTimeOut: time.Second, Stealth: StealthMode(99)}}
+	conn, err := tr.wrapStealth(cli)
+	if err == nil {
+		t.Fatal("wrapStealth accepted an unknown stealth mode")
+	}
+	if conn != nil {
+		t.Fatalf("wrapStealth returned a connection (%v) alongside the error for an unknown mode", conn)
+	}
+}

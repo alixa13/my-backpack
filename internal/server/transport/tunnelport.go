@@ -11,12 +11,12 @@ import (
 )
 
 // tcpTunnelPort is the tunnel port of the transports that carry the tunnel over
-// plain TCP — tcp (and stealth and stealth2, which are tcp under Noise) and tcpmux. It binds
-// the port with the tunnel's socket options, retrying rather than exiting when
-// the port is taken, accepts for as long as the generation runs, applies the
-// options to each accepted connection, and hands it to admit in a goroutine of
-// its own. The two transports had a copy each; what differs between them —
-// what admitting a connection means — is admit.
+// plain TCP — tcp (and stealth and stealth2, which are tcp under Noise) and
+// tcpmux. It binds the port with the tunnel's socket options, retrying rather
+// than exiting when the port is taken, accepts for as long as the generation
+// runs, applies the options to each accepted connection, and hands it to admit
+// in a goroutine of its own. The two transports had a copy each; what differs
+// between them — what admitting a connection means — is admit.
 type tcpTunnelPort struct {
 	ctx       context.Context
 	addr      string

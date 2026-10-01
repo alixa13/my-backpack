@@ -170,3 +170,36 @@ func kcpFlags(k *transport.KcpTransport) (useICMP, usePck bool) {
 	v := reflect.ValueOf(k).Elem().FieldByName("config").Elem()
 	return v.FieldByName("UseICMP").Bool(), v.FieldByName("UsePck").Bool()
 }
+
+// The record layer a transport name asks for is decided in one place, and
+// nothing downstream of it can tell a stealth tunnel from a plain one: a stealth
+// name that mapped to StealthOff would not fail to start, it would quietly carry
+// the tunnel in the clear. So the mapping is pinned name by name, and a name that
+// does not run on the TCP engine is a programming error, not a plain tunnel.
+func TestStealthModeIsPinnedToTheTransportName(t *testing.T) {
+	for _, tc := range []struct {
+		tr   config.TransportType
+		want transport.StealthMode
+	}{
+		{config.TCP, transport.StealthOff},
+		{config.STEALTH, transport.StealthV1},
+		{config.STEALTH2, transport.StealthV2},
+	} {
+		if got := stealthMode(tc.tr); got != tc.want {
+			t.Errorf("stealthMode(%q) = %d, want %d", tc.tr, got, tc.want)
+		}
+	}
+}
+
+func TestStealthModeRefusesATransportThatIsNotOnTheTCPEngine(t *testing.T) {
+	for _, tr := range []config.TransportType{config.WS, config.TCPMUX, config.UDP, "nonsense"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("stealthMode(%q) returned a mode; it must not guess one, least of all a plain tunnel", tr)
+				}
+			}()
+			stealthMode(tr)
+		}()
+	}
+}
