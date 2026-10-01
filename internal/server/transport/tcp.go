@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"time"
 
@@ -69,9 +70,33 @@ type TcpConfig struct {
 	MaxConnections int
 	// BandwidthMbps caps total tunnel throughput (0 = unlimited).
 	BandwidthMbps int
-	// Stealth wraps every accepted tunnel connection in the Noise record layer,
-	// so the stream has no fingerprint for deep packet inspection to match.
-	Stealth bool
+	// Stealth says which Noise record layer, if any, wraps every accepted
+	// tunnel connection, so the stream has no fingerprint for deep packet
+	// inspection to match.
+	Stealth StealthMode
+}
+
+// StealthMode selects the record layer wrapped over the TCP tunnel.
+type StealthMode int
+
+const (
+	StealthOff StealthMode = iota // plain tcp
+	StealthV1                     // Noise, v1 opening
+	StealthV2                     // Noise, hardened opening
+)
+
+// stealthHandshake completes the responder's half of the record layer this
+// transport's mode names, over a connection that is not yet trusted. It is
+// only called for a stealth mode; StealthOff has no handshake to run.
+func (s *TcpTransport) stealthHandshake(raw net.Conn) (net.Conn, error) {
+	const budget = 15 * time.Second
+	switch s.config.Stealth {
+	case StealthV1:
+		return network.NoiseServerConn(raw, s.config.Token, budget)
+	case StealthV2:
+		return network.NoiseServerConnV2(raw, s.config.Token, budget)
+	}
+	return nil, fmt.Errorf("unknown stealth mode %d", s.config.Stealth)
 }
 
 func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -238,12 +263,18 @@ func (s *TcpTransport) tunnelPort(g *tcpGen) tcpTunnelPort {
 func (s *TcpTransport) admitTunnelConn(g *tcpGen, raw net.Conn) {
 	conn := raw
 
-	// In stealth mode the Noise handshake is completed first, so everything
-	// after it — the announcement, the control channel, the data conns — reads
-	// and writes through the encrypted record layer without knowing it is
-	// there. A peer without the token fails here and gets no further.
-	if s.config.Stealth {
-		wrapped, err := network.NoiseServerConn(raw, s.config.Token, 15*time.Second)
+	// In stealth mode the Noise handshake — v1 for stealth, v2 for stealth2 —
+	// is completed first, so everything after it — the announcement, the
+	// control channel, the data conns — reads and writes through the encrypted
+	// record layer without knowing it is there. A peer without the token fails
+	// here and gets no further.
+	//
+	// This runs in the connection's own goroutine, under the preauth gate (see
+	// tcpTunnelPort.accept), never in the accept loop: stealth2 holds a failed
+	// handshake open on purpose, and the gate is what bounds how many such
+	// connections can be held at once.
+	if s.config.Stealth != StealthOff {
+		wrapped, err := s.stealthHandshake(raw)
 		if err != nil {
 			s.logger.Debugf("stealth handshake failed from %s: %v", raw.RemoteAddr(), err)
 			raw.Close()

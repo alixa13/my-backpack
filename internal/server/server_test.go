@@ -53,14 +53,15 @@ func baseConfig(t *testing.T, tr config.TransportType) *config.ServerConfig {
 // start.
 func TestEveryTransportStarts(t *testing.T) {
 	want := map[config.TransportType]string{
-		config.TCP:     "*transport.TcpTransport",
-		config.STEALTH: "*transport.TcpTransport",
-		config.TCPMUX:  "*transport.TcpMuxTransport",
-		config.KCP:     "*transport.KcpTransport",
-		config.QUIC:    "*transport.QuicTransport",
-		config.WS:      "*transport.WsTransport",
-		config.WSMUX:   "*transport.WsMuxTransport",
-		config.UDP:     "*transport.UdpTransport",
+		config.TCP:      "*transport.TcpTransport",
+		config.STEALTH:  "*transport.TcpTransport",
+		config.STEALTH2: "*transport.TcpTransport",
+		config.TCPMUX:   "*transport.TcpMuxTransport",
+		config.KCP:      "*transport.KcpTransport",
+		config.QUIC:     "*transport.QuicTransport",
+		config.WS:       "*transport.WsTransport",
+		config.WSMUX:    "*transport.WsMuxTransport",
+		config.UDP:      "*transport.UdpTransport",
 	}
 	for tr, typeName := range want {
 		t.Run(string(tr), func(t *testing.T) {

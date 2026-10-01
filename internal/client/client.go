@@ -171,7 +171,7 @@ func (c *Client) startTransport(ctx context.Context, tr config.TransportType, en
 		endpoints.SetReachProbe(nil)
 	}
 	switch tr {
-	case config.TCP, config.STEALTH:
+	case config.TCP, config.STEALTH, config.STEALTH2:
 		tcpConfig := &transport.TcpConfig{
 			RemoteAddr:     c.config.RemoteAddr,
 			Endpoints:      endpoints,
@@ -191,7 +191,8 @@ func (c *Client) startTransport(ctx context.Context, tr config.TransportType, en
 			Outbound:       outbound,
 			// Stealth is the TCP transport with a Noise record layer over every
 			// tunnel connection; everything else about it is identical.
-			Stealth: tr == config.STEALTH,
+			// stealth2 is the same with the hardened opening.
+			Stealth: stealthMode(tr),
 		}
 		tcpClient := transport.NewTCPClient(ctx, tcpConfig, c.logger)
 		go tcpClient.Start()
@@ -362,11 +363,22 @@ func (c *Client) startTransport(ctx context.Context, tr config.TransportType, en
 	}
 }
 
+// stealthMode is the record layer a transport name puts over the TCP tunnel.
+func stealthMode(tr config.TransportType) transport.StealthMode {
+	switch tr {
+	case config.STEALTH:
+		return transport.StealthV1
+	case config.STEALTH2:
+		return transport.StealthV2
+	}
+	return transport.StealthOff
+}
+
 // tcpPortTransport reports whether a transport's tunnel port is TCP, so a
 // connection to it says whether it answers.
 func tcpPortTransport(tr config.TransportType) bool {
 	switch tr {
-	case config.TCP, config.TCPMUX, config.WS, config.WSS, config.WSMUX, config.WSSMUX, config.STEALTH:
+	case config.TCP, config.TCPMUX, config.WS, config.WSS, config.WSMUX, config.WSSMUX, config.STEALTH, config.STEALTH2:
 		return true
 	}
 	return false

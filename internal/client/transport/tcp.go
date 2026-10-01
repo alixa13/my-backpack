@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"time"
@@ -53,20 +54,39 @@ type TcpConfig struct {
 	// interface, under a routing mark. Nil dials directly. None of it is ever
 	// applied to the dial to the local backend — see network/outbound.go.
 	Outbound *network.Outbound
-	// Stealth wraps every tunnel-carrying connection in the Noise record layer,
-	// so the stream has no fingerprint for deep packet inspection to match.
-	Stealth bool
+	// Stealth says which Noise record layer, if any, wraps every
+	// tunnel-carrying connection, so the stream has no fingerprint for deep
+	// packet inspection to match.
+	Stealth StealthMode
 }
 
+// StealthMode selects the record layer wrapped over the TCP tunnel.
+type StealthMode int
+
+const (
+	StealthOff StealthMode = iota // plain tcp
+	StealthV1                     // Noise, v1 opening
+	StealthV2                     // Noise, hardened opening
+)
+
 // wrapStealth upgrades a freshly dialled tunnel connection to the Noise record
-// layer when this tunnel runs in stealth mode, and returns it unchanged
-// otherwise. Only tunnel-carrying connections are wrapped; the dial to the
-// local backend stays plain, since that traffic never leaves the machine.
+// layer its stealth mode names (stealth: v1, stealth2: v2), and returns it
+// unchanged when the tunnel is plain. Only tunnel-carrying connections are
+// wrapped; the dial to the local backend stays plain, since that traffic never
+// leaves the machine.
 func (c *TcpTransport) wrapStealth(conn net.Conn) (net.Conn, error) {
-	if !c.config.Stealth {
+	switch c.config.Stealth {
+	case StealthOff:
 		return conn, nil
+	case StealthV1:
+		return network.NoiseClientConn(conn, c.config.Token, c.config.DialTimeOut)
+	case StealthV2:
+		return network.NoiseClientConnV2(conn, c.config.Token, c.config.DialTimeOut)
 	}
-	return network.NoiseClientConn(conn, c.config.Token, c.config.DialTimeOut)
+	// Never fall back to a plain stream on a mode this does not know: a
+	// stealth tunnel that quietly sent plaintext would be worse than one that
+	// does not start.
+	return nil, fmt.Errorf("unknown stealth mode %d", c.config.Stealth)
 }
 
 func NewTCPClient(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {

@@ -138,13 +138,24 @@ type runner interface {
 	Wait(context.Context)
 }
 
+// stealthMode is the record layer a transport name puts over the TCP tunnel.
+func stealthMode(tr config.TransportType) transport.StealthMode {
+	switch tr {
+	case config.STEALTH:
+		return transport.StealthV1
+	case config.STEALTH2:
+		return transport.StealthV2
+	}
+	return transport.StealthOff
+}
+
 // startTransport launches one transport under ctx and returns it. Cancelling
 // ctx tears it down, including the forwarded-port listeners, which is what lets
 // a chain run several of these one after another without them fighting over
 // the same ports.
 func (s *Server) startTransport(ctx context.Context, tr config.TransportType) runner {
 	switch tr {
-	case config.TCP, config.STEALTH:
+	case config.TCP, config.STEALTH, config.STEALTH2:
 		tcpConfig := &transport.TcpConfig{
 			BindAddr:       s.config.BindAddr,
 			Nodelay:        s.config.Nodelay,
@@ -165,7 +176,8 @@ func (s *Server) startTransport(ctx context.Context, tr config.TransportType) ru
 			BandwidthMbps:  s.config.BandwidthMbps,
 			// Stealth is the TCP transport with a Noise record layer over every
 			// tunnel connection; everything else about it is identical.
-			Stealth: tr == config.STEALTH,
+			// stealth2 is the same with the hardened opening.
+			Stealth: stealthMode(tr),
 		}
 
 		tcpServer := transport.NewTCPServer(ctx, tcpConfig, s.logger)

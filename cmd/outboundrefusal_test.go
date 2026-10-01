@@ -26,6 +26,7 @@ func TestEveryTransportOutsideTheTCPDialerRefusesOutboundSettings(t *testing.T) 
 	}{
 		{config.TCP, false, "a plain TCP dial, which is what these settings are"},
 		{config.STEALTH, false, "TCP with a Noise record layer over it"},
+		{config.STEALTH2, false, "TCP with the hardened Noise record layer over it"},
 		{config.TCPMUX, false, "TCP with smux over it"},
 		{config.WS, false, "an HTTP upgrade over TCP"},
 		{config.WSS, false, "TLS over TCP"},

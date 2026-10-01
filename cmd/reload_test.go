@@ -251,6 +251,7 @@ func TestTunnelNetwork(t *testing.T) {
 		{config.WSMUX, "tcp"},
 		{config.WSSMUX, "tcp"},
 		{config.STEALTH, "tcp"},
+		{config.STEALTH2, "tcp"},
 		{config.UDP, "udp"},
 		{config.KCP, "udp"},
 		{config.QUIC, "udp"},

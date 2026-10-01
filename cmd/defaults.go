@@ -206,7 +206,7 @@ func warnIgnoredProxyProtocol(cfg *config.Config) {
 	}
 	switch cfg.Server.Transport {
 	case config.WS, config.WSS, config.UDP:
-		logger.Warnf("proxy_protocol has no effect on the %s transport and is ignored: use tcp, tcpmux, stealth, kcp, pck, quic, wsmux or wssmux to pass the client's address to the service", cfg.Server.Transport)
+		logger.Warnf("proxy_protocol has no effect on the %s transport and is ignored: use tcp, tcpmux, stealth, stealth2, kcp, pck, quic, wsmux or wssmux to pass the client's address to the service", cfg.Server.Transport)
 	}
 }
 
