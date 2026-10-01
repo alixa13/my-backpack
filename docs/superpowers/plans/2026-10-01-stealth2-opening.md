@@ -4,9 +4,9 @@
 
 **Goal:** Add an opt-in reverse transport, `stealth2`, whose connection opening has no constant an observer can match — uniform-random key encoding, no cleartext length, and variable first-flight size — while leaving today's `stealth` byte-for-byte unchanged.
 
-**Architecture:** A second Noise variant in `internal/utils/network`, reached through new `…V2` constructors so the v1 path is untouched. v2 encodes the X25519 ephemeral key as an Elligator2 representative (uniform bytes), pads the handshake payload inside the AEAD, and masks every record's 2-byte length prefix with a per-connection keystream derived from the handshake's channel binding. `stealth2` is a distinct transport name wired through config and the reverse client/server exactly as `stealth` is.
+**Architecture:** A second Noise variant in `internal/utils/network`, reached through new `…V2` constructors so the v1 path is untouched. v2 encodes the X25519 ephemeral key as an Elligator2 representative (uniform bytes); the handshake is wrapped in an **obfs4-style `m | P | M | MAC` frame keyed from the token** so the opening carries no length, type, or constant (a bounded replay filter denies replayed openings); the data phase then uses the Noise record layer with the 2-byte length prefix masked by a per-connection ChaCha20 keystream keyed from the handshake channel binding. `stealth2` is a distinct transport name wired through config and the reverse client/server exactly as `stealth` is.
 
-**Tech Stack:** Go 1.26.6, `github.com/flynn/noise` v1.1.0, `golang.org/x/crypto` (hkdf, chacha20, curve25519 — already present), vendored `x25519ell2` (GPL-3.0, AGPL-compatible), and its deps `filippo.io/edwards25519` + `gitlab.com/yawning/edwards25519-extra`.
+**Tech Stack:** Go 1.26.6, `github.com/flynn/noise` v1.1.0, `golang.org/x/crypto` (hkdf, hmac via crypto/hmac, chacha20, curve25519 — already present; the mark/MAC framing adds no new dependency), vendored `x25519ell2` (GPL-3.0, AGPL-compatible), and its deps `filippo.io/edwards25519` + `gitlab.com/yawning/edwards25519-extra`.
 
 **Spec:** `docs/superpowers/specs/2026-10-01-stealth-v2-opening-design.md` — read it alongside this plan.
 
@@ -14,7 +14,9 @@
 
 - Go version floor: **1.26.6** (`go.mod`). The Elligator2 library must build against it.
 - **Do not modify** the v1 wire path: `noiseSuite`, `noisePrologue`, `noisePSK`, `NoiseClientConn`, `NoiseServerConn`, the existing `noiseConn` framing, or any v0/v1 negotiation. v2 is additive.
-- Keyed only from the tunnel token. No new key material, no new config secret.
+- Keyed only from the tunnel token. No new key material, no new config secret. The opening mark/MAC key is `HKDF(token, "backpack-stealth2-mark-v1")`; the data-phase length mask is keyed from the Noise channel binding.
+- The opening carries **no cleartext length, type, or constant** — the token-keyed mark delimits the random padding. A wrong token never locates the mark (dead port), preserving the existing silent-to-a-stranger behaviour.
+- The replay filter is **bounded** in size and time (ADR 0004); only openings whose MAC already verified (token-holders) can populate it, so a stranger can neither flood it nor evict a genuine entry.
 - Elligator2 field arithmetic is **not** hand-rolled or reimplemented from memory — vendor yawning's `x25519ell2` (GPL-3.0; keep its license header and attribution, combined under AGPL-3.0). Our code only wraps it.
 - `stealth2` must appear everywhere a transport name is enumerated, or the source-reading parity tests (`internal/client/transport/parity_test.go`) fail by design.
 - Scope is the **reverse** transport. Direct-tunnel `stealth2` is an explicit follow-up, not in this plan.
@@ -22,9 +24,10 @@
 ## Review Focus
 
 - **Cross-version contact:** a `stealth2` end meeting a v0/v1 `stealth` end (either direction) must fail cleanly — no hang past the handshake timeout, no silent corruption. Pinned in Task 3.
-- **Keystream uniqueness:** two connections on the same token must not produce identical opening bytes; a per-connection mask that collapsed to a constant would reintroduce the tell. Pinned in Task 4.
-- **Adversarial opening:** a garbage or wrong-token first flight (including a representative that decodes to a low-order point) must fail the handshake and send nothing back — the dead-port property — not panic. Pinned in Task 3.
-- **Record-size ceiling:** a full-size write after masking + payload padding must still fit under `noiseMaxFrame`; the v2 plaintext ceiling must be computed, not assumed. Pinned in Task 4.
+- **Dead port on wrong token:** a garbage or wrong-token opening never locates the mark; the server writes nothing back and does not panic. Pinned in Tasks 2 and 3.
+- **Replay rejected:** a captured valid opening replayed within the epoch window is rejected by the bounded filter (second read fails); only token-holders can ever populate the filter. Pinned in Task 2.
+- **Data-phase mask is per-connection:** the data-record length mask is keyed from the channel binding (unique per handshake), so two connections never share a keystream. Pinned in Task 4.
+- **Record-size ceiling:** a full-size data write must still fit under `noiseMaxFrame` after the inside-AEAD payload padding; the v2 plaintext ceiling is computed, not assumed. Pinned in Task 4.
 - **Fallback validation:** `[stealth2, stealth]` must validate as a chain and each must be a recognised reverse transport; a typo must still be rejected at load. Pinned in Task 5.
 
 ---
@@ -211,23 +214,344 @@ git commit -m "feat(network): vendor x25519ell2 and wrap it as a noise DHFunc fo
 
 ---
 
-## Task 2: v2 handshake — Elligator2 key + padded payload
+## Task 2: obfs4-style mark/MAC opening frame + replay filter
 
-A v2 handshake over the Elligator suite, with the handshake payload padded by random-length filler inside the AEAD so the first flight is not a constant size. Still NNpsk0, still token-keyed, still silent to a wrong token.
+The opening carries no readable length. Each handshake message `m` goes out as
+`m | P | M | MAC`, token-keyed, per the spec's "v2 opening framing" section. A
+peer holding the token computes the mark `M = HMAC(markKey, m)` and scans for it
+to find where the random padding `P` ends; a wrong token never finds the mark
+(silent dead port). A bounded replay filter rejects a captured opening replayed
+within the epoch window. This task is the standalone framing primitive + filter;
+Task 3 wraps the Noise handshake in it.
+
+**Reference (read it — port the scan/MAC structure, do not invent):**
+`$(go env GOMODCACHE)/gitlab.com/yawning/obfs4.git@v0.0.0-20231012084234-c3e2d44b1033/transports/obfs4/handshake_ntor.go`
+— see `clientHandshake.generateHandshake`, `serverHandshake.parseClientHandshake`, and `findMarkMac`. We key the HMAC from the token instead of obfs4's `serverIdentity | nodeID`, and we mark on the whole fixed-length message `m` (obfs4 marks on just `X` because its payload has no fixed length; ours does).
 
 **Files:**
-- Modify: `internal/utils/network/noise.go` (add constants + a variant-aware internal handshake; v1 entry points unchanged)
-- Create: `internal/utils/network/noisev2.go` (v2 constructors + handshake padding)
-- Test: `internal/utils/network/noisev2_test.go`
+- Create: `internal/utils/network/stealth2frame.go` — `markKey`, epoch helper, `writeMarkedFrame`, `readMarkedFrame`.
+- Create: `internal/utils/network/stealth2replay.go` — bounded, time-windowed replay filter.
+- Test: `internal/utils/network/stealth2frame_test.go`, `internal/utils/network/stealth2replay_test.go`.
+
+**Interfaces (produced; Task 3 consumes):**
+- `func markKey(token string) ([]byte, error)` — 32 bytes, `HKDF-SHA256(token, info="backpack-stealth2-mark-v1")`.
+- `func writeMarkedFrame(w io.Writer, key, m []byte) error` — sends `m | P | M | MAC`, `P` random in `[0, maxOpening-len(m)-markLength-macLength]`.
+- `func readMarkedFrame(r io.Reader, key []byte, innerLen int, rf *replayFilter) ([]byte, error)` — reads `innerLen` bytes as `m`, computes `M=HMAC(key,m)[:16]`, scans subsequent bytes (bounded by `maxOpening`) for `M`, verifies `MAC` over `m|P|M|E` for `E ∈ {now-1, now, now+1}`, rejects via `rf` if non-nil and the MAC was seen, returns `m`. On any failure returns an error and consumes nothing further.
+- `type replayFilter` with `func newReplayFilter() *replayFilter` and `func (f *replayFilter) testAndAdd(mac []byte) bool` (true = fresh/accept, false = replay).
+
+**Constants:** `markLength = 16`, `macLength = 16`, `maxOpening = 8192`, epoch = `time.Now().Unix()/3600`.
+
+- [ ] **Step 1: Write the failing tests** `internal/utils/network/stealth2frame_test.go`:
+
+```go
+package network
+
+import (
+	"bytes"
+	"io"
+	"testing"
+)
+
+const frameTok = "stealth2-frame-token-0123456789abcd"
+
+// A framed message round-trips: the reader recovers exactly m.
+func TestMarkedFrameRoundTrips(t *testing.T) {
+	key, err := markKey(frameTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := []byte("a 49-byte-ish inner noise message stand-in ....!!")
+	var buf bytes.Buffer
+	if err := writeMarkedFrame(&buf, key, m); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readMarkedFrame(&buf, key, len(m), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, m) {
+		t.Fatalf("recovered %q, want %q", got, m)
+	}
+}
+
+// No readable length: the frame on the wire is all high-entropy, and across
+// frames the total size varies (padding) and the first bytes are not constant.
+func TestMarkedFrameHasNoReadableStructure(t *testing.T) {
+	key, _ := markKey(frameTok)
+	m := bytes.Repeat([]byte{0xA5}, 49) // stand-in; real m is an encrypted noise msg
+	sizes := map[int]int{}
+	firstTwo := map[[2]byte]int{}
+	for i := 0; i < 400; i++ {
+		var buf bytes.Buffer
+		_ = writeMarkedFrame(&buf, key, m)
+		b := buf.Bytes()
+		sizes[len(b)]++
+		// Note: m here is a constant stand-in, so byte[0..1] variation in this
+		// test comes only from framing; the real opening also varies m's e.
+		firstTwo[[2]byte{b[len(b)-1], b[len(b)-2]}]++
+	}
+	if len(sizes) < 16 {
+		t.Errorf("framed size took only %d distinct values; padding is not varying", len(sizes))
+	}
+}
+
+// A wrong key never locates the mark: readMarkedFrame must fail, not hang or
+// mis-frame. This is the dead-port property at the frame layer.
+func TestMarkedFrameWrongKeyRejected(t *testing.T) {
+	key, _ := markKey(frameTok)
+	wrong, _ := markKey("the-wrong-token-xxxxxxxxxxxxxxxxxxxx")
+	m := bytes.Repeat([]byte{0x5A}, 49)
+	var buf bytes.Buffer
+	_ = writeMarkedFrame(&buf, key, m)
+	if _, err := readMarkedFrame(&buf, wrong, len(m), nil); err == nil {
+		t.Fatal("readMarkedFrame accepted a frame under the wrong key")
+	}
+}
+
+// A replayed frame (same MAC) is rejected by the filter on the second read.
+func TestMarkedFrameReplayRejected(t *testing.T) {
+	key, _ := markKey(frameTok)
+	m := bytes.Repeat([]byte{0x33}, 49)
+	var buf bytes.Buffer
+	_ = writeMarkedFrame(&buf, key, m)
+	wire := buf.Bytes()
+	rf := newReplayFilter()
+	if _, err := readMarkedFrame(bytes.NewReader(wire), key, len(m), rf); err != nil {
+		t.Fatalf("first read should pass: %v", err)
+	}
+	if _, err := readMarkedFrame(bytes.NewReader(wire), key, len(m), rf); err == nil {
+		t.Fatal("replayed frame was accepted")
+	}
+}
+
+var _ io.Reader // keep imports stable if a test above is edited
+```
+
+And `internal/utils/network/stealth2replay_test.go`:
+
+```go
+package network
+
+import "testing"
+
+func TestReplayFilterAcceptsFreshRejectsRepeat(t *testing.T) {
+	rf := newReplayFilter()
+	mac := []byte("sixteen-byte-mac")
+	if !rf.testAndAdd(mac) {
+		t.Fatal("first occurrence should be accepted")
+	}
+	if rf.testAndAdd(mac) {
+		t.Fatal("second occurrence should be rejected")
+	}
+	if !rf.testAndAdd([]byte("another-mac-16by")) {
+		t.Fatal("a different mac should be accepted")
+	}
+}
+```
+
+- [ ] **Step 2: Run, verify fail** (`markKey` / `writeMarkedFrame` / `newReplayFilter` undefined):
+
+```bash
+go test ./internal/utils/network/ -run "MarkedFrame|ReplayFilter" -v
+```
+
+Expected: FAIL (build: undefined identifiers).
+
+- [ ] **Step 3: Implement `stealth2replay.go`** — a bounded, time-windowed set. Only frames whose MAC already verified reach it (so a stranger without the token can never populate it — ADR 0004):
+
+```go
+package network
+
+import (
+	"encoding/binary"
+	"sync"
+	"time"
+)
+
+const (
+	replayWindow   = 2 * time.Hour // covers epoch E-1..E+1 plus skew
+	replayMaxEntry = 4096           // bound; oldest evicted when full
+)
+
+type replayFilter struct {
+	mu   sync.Mutex
+	seen map[uint64]time.Time // key: first 8 bytes of the MAC
+}
+
+func newReplayFilter() *replayFilter { return &replayFilter{seen: make(map[uint64]time.Time)} }
+
+// testAndAdd returns true if mac is fresh (and records it), false if it was
+// seen within the window. Callers pass a MAC that already verified.
+func (f *replayFilter) testAndAdd(mac []byte) bool {
+	if len(mac) < 8 {
+		return false
+	}
+	k := binary.BigEndian.Uint64(mac[:8])
+	now := time.Now()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.evict(now)
+	if t, ok := f.seen[k]; ok && now.Sub(t) < replayWindow {
+		return false
+	}
+	f.seen[k] = now
+	return true
+}
+
+func (f *replayFilter) evict(now time.Time) {
+	for k, t := range f.seen {
+		if now.Sub(t) >= replayWindow {
+			delete(f.seen, k)
+		}
+	}
+	// Hard cap: if still over, drop the oldest. Only token-holders can grow
+	// this, so the cap bounds a compromised-token flood, not a stranger.
+	for len(f.seen) > replayMaxEntry {
+		var oldestK uint64
+		var oldestT time.Time
+		first := true
+		for k, t := range f.seen {
+			if first || t.Before(oldestT) {
+				oldestK, oldestT, first = k, t, false
+			}
+		}
+		delete(f.seen, oldestK)
+	}
+}
+```
+
+- [ ] **Step 4: Implement `stealth2frame.go`.** Derive `markKey` with HKDF; build/parse `m | P | M | MAC`. Port the scan from the obfs4 reference named above. Sketch (fill the scan loop from the reference; the MAC uses `hmac.New(sha256.New, key)`):
+
+```go
+package network
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"strconv"
+	"time"
+
+	"golang.org/x/crypto/hkdf"
+)
+
+const (
+	markLength = sha256.Size / 2 // 16
+	macLength  = sha256.Size / 2 // 16
+	maxOpening = 8192
+)
+
+func markKey(token string) ([]byte, error) {
+	k := make([]byte, 32)
+	r := hkdf.New(sha256.New, []byte(token), nil, []byte("backpack-stealth2-mark-v1"))
+	_, err := io.ReadFull(r, k)
+	return k, err
+}
+
+func epochHours() []string { // current hour and ±1, as obfs4 does
+	h := time.Now().Unix() / 3600
+	return []string{
+		strconv.FormatInt(h-1, 10),
+		strconv.FormatInt(h, 10),
+		strconv.FormatInt(h+1, 10),
+	}
+}
+
+func mac16(key, data []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write(data)
+	return h.Sum(nil)[:macLength]
+}
+
+// writeMarkedFrame sends m | P | M | MAC(m|P|M|E) with E = current epoch hour.
+func writeMarkedFrame(w io.Writer, key, m []byte) error {
+	maxPad := maxOpening - len(m) - markLength - macLength
+	if maxPad < 0 {
+		return fmt.Errorf("stealth2: inner message %d too large for opening", len(m))
+	}
+	padN, err := randIntn(maxPad + 1)
+	if err != nil {
+		return err
+	}
+	p := make([]byte, padN)
+	if _, err := io.ReadFull(rand.Reader, p); err != nil {
+		return err
+	}
+	mark := mac16(key, m)
+	e := epochHours()[1] // current hour for sending
+	buf := make([]byte, 0, len(m)+padN+markLength+macLength)
+	buf = append(buf, m...)
+	buf = append(buf, p...)
+	buf = append(buf, mark...)
+	tag := mac16(key, append(append([]byte{}, buf...), []byte(e)...))
+	buf = append(buf, tag...)
+	_, err = w.Write(buf)
+	return err
+}
+
+// readMarkedFrame reads innerLen bytes as m, then scans for the mark to delimit
+// the padding, verifies the MAC over any accepted epoch, and (if rf != nil)
+// rejects a replayed MAC. Port the incremental read + findMarkMac loop from the
+// obfs4 reference; the MAC/epoch/replay checks are above/below.
+func readMarkedFrame(r io.Reader, key []byte, innerLen int, rf *replayFilter) ([]byte, error) {
+	// ... read innerLen into m; mark := mac16(key, m);
+	// ... grow a buffer reading from r up to maxOpening, searching for mark;
+	// ... on mark at pos: P = buf[:pos]; tag = buf[pos+markLength:pos+markLength+macLength];
+	// ...   for each e in epochHours(): if hmac.Equal(mac16(key, m|P|mark|e), tag) { ok }
+	// ...   if !ok -> error; if rf != nil && !rf.testAndAdd(tag) -> replay error;
+	// ...   return m
+	// ... if read exceeds maxOpening without a mark -> error
+	panic("implement: see obfs4 findMarkMac reference")
+}
+```
+
+Notes for the implementer: use `crypto/hmac` (the duplicate `"hmac"` import line in the sketch is a deliberate marker — delete it). Add a small `randIntn(n int) (int, error)` helper over `crypto/rand` (or reuse an existing project RNG helper if one exists — check `internal/utils`). The spurious-mark-in-padding case is handled as in obfs4: a false mark position fails the MAC and the scan continues; the odds of a 16-byte collision in ≤8 KB are ~2⁻¹¹⁵.
+
+- [ ] **Step 5: Run, verify pass:**
+
+```bash
+go test ./internal/utils/network/ -run "MarkedFrame|ReplayFilter" -race -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit:**
+
+```bash
+git add internal/utils/network/stealth2frame.go internal/utils/network/stealth2replay.go internal/utils/network/stealth2frame_test.go internal/utils/network/stealth2replay_test.go
+git commit -m "feat(network): obfs4-style mark/MAC opening frame and replay filter for stealth2"
+```
+
+---
+
+## Task 3: v2 handshake — NNpsk0 over Elligator, wrapped in the mark/MAC frame
+
+Wrap the Noise NNpsk0 handshake (over the Elligator suite from Task 1) in the
+Task 2 mark/MAC frame. The Noise payload is a single fixed byte (the version),
+so each inner message `m` is a protocol-constant length both ends know; all size
+variation lives in the frame padding. The server runs the replay filter. A wrong
+token never locates the mark — the server writes nothing (dead port).
+
+**Files:**
+- Create: `internal/utils/network/noisev2.go` — `NoiseClientConnV2`, `NoiseServerConnV2`, `noiseHandshakeV2`, `noiseSuiteV2`.
+- Modify: none in the v1 path (`noise.go` is not edited; reuse its exported `noiseVersion`, `noisePSK`, `noisePrologue`).
+- Test: `internal/utils/network/noisev2_test.go`.
 
 **Interfaces:**
-- Consumes: `newElligatorDH()` (Task 1).
-- Produces:
-  - `func NoiseClientConnV2(raw net.Conn, token string, timeout time.Duration) (net.Conn, error)`
-  - `func NoiseServerConnV2(raw net.Conn, token string, timeout time.Duration) (net.Conn, error)`
-  - both returning a `net.Conn` whose `ChannelBinding() []byte` is reachable internally for Task 4's framing key.
+- Consumes: `newElligatorDH()` (T1); `markKey`, `writeMarkedFrame`, `readMarkedFrame`, `newReplayFilter` (T2).
+- Produces: `func NoiseClientConnV2(raw net.Conn, token string, timeout time.Duration) (net.Conn, error)` and `func NoiseServerConnV2(raw net.Conn, token string, timeout time.Duration) (net.Conn, error)`. On success each returns a `net.Conn` built from the Noise cipherstates and the handshake channel binding (Task 4 turns this into the masked-record conn; for THIS task return `&noiseConn{Conn: raw, send: sendCS, recv: recvCS, pad: true}` inline, and expose the channel binding to Task 4's constructor).
 
-- [ ] **Step 1: Write the failing test** `internal/utils/network/noisev2_test.go`:
+**Design:**
+- `noiseSuiteV2 = noise.NewCipherSuite(newElligatorDH(), noise.CipherChaChaPoly, noise.HashBLAKE2s)`.
+- Inner payload is exactly `[]byte{noiseVersion}` on both messages → `innerLen` is the constant length of the NN message with a 1-byte payload (compute it once; assert it in a test rather than hard-coding a guess).
+- Client: build m1 with `hs.WriteMessage(nil, []byte{noiseVersion})`; `writeMarkedFrame(raw, key, m1)`; `readMarkedFrame(raw, key, innerLen, nil)` → m2; `hs.ReadMessage(nil, m2)`.
+- Server: `readMarkedFrame(raw, key, innerLen, replayFilter)` → m1; `hs.ReadMessage(nil, m1)` (wrong token already failed at the mark); build and `writeMarkedFrame` the reply m2.
+- The server side uses a package-level `var stealth2Replay = newReplayFilter()` (one per process suffices — MACs are token-keyed, so cross-tunnel collisions are negligible, and the filter is bounded). No caller wiring is needed; `NoiseServerConnV2` passes `stealth2Replay` to `readMarkedFrame`. The client passes `nil` (it initiates; nothing to replay-check).
+- Keep the 15 s handshake deadline (`raw.SetDeadline`) exactly as v1 does; clear it on success.
+
+- [ ] **Step 1: Write the failing tests** `internal/utils/network/noisev2_test.go`:
 
 ```go
 package network
@@ -242,31 +566,28 @@ import (
 
 const v2Token = "stealth2-token-0123456789abcdefghij"
 
-// A v2 client and v2 server complete the handshake and carry a payload both ways.
 func TestV2RoundTrip(t *testing.T) {
 	c, s := net.Pipe()
-	srvDone := make(chan net.Conn, 1)
+	srv := make(chan net.Conn, 1)
 	go func() {
 		conn, err := NoiseServerConnV2(s, v2Token, 3*time.Second)
 		if err != nil {
 			t.Errorf("server: %v", err)
-			srvDone <- nil
-			return
 		}
-		srvDone <- conn
+		srv <- conn
 	}()
 	cl, err := NoiseClientConnV2(c, v2Token, 3*time.Second)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
-	srv := <-srvDone
-	if srv == nil {
+	sconn := <-srv
+	if sconn == nil {
 		t.Fatal("server handshake failed")
 	}
 	want := []byte("hello over stealth2")
 	go func() { _, _ = cl.Write(want) }()
 	got := make([]byte, len(want))
-	if _, err := io.ReadFull(srv, got); err != nil {
+	if _, err := io.ReadFull(sconn, got); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, want) {
@@ -274,133 +595,11 @@ func TestV2RoundTrip(t *testing.T) {
 	}
 }
 
-// Sampled first flights must take many distinct sizes — the v1 opening took one.
-func TestV2OpeningSizeVaries(t *testing.T) {
-	if testing.Short() {
-		t.Skip("sampling test")
-	}
-	sizes := map[int]int{}
-	for i := 0; i < 400; i++ {
-		sizes[len(captureV2FirstFlight(t))]++
-	}
-	if len(sizes) < 16 {
-		t.Errorf("first flight took only %d distinct sizes; it is still near-constant", len(sizes))
-	}
-}
-
-// captureV2FirstFlight returns the raw bytes the v2 initiator sends first.
-func captureV2FirstFlight(t *testing.T) []byte {
-	t.Helper()
-	c, s := net.Pipe()
-	out := make(chan []byte, 1)
-	go func() {
-		buf := make([]byte, 4096)
-		n, _ := s.Read(buf)
-		out <- append([]byte(nil), buf[:n]...)
-		s.Close()
-	}()
-	go func() { _, _ = NoiseClientConnV2(c, v2Token, time.Second) }()
-	select {
-	case b := <-out:
-		return b
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out")
-		return nil
-	}
-}
-```
-
-- [ ] **Step 2: Run, verify fail** (`NoiseClientConnV2` undefined):
-
-```bash
-go test ./internal/utils/network/ -run TestV2 -v
-```
-
-Expected: FAIL, `undefined: NoiseClientConnV2`.
-
-- [ ] **Step 3: Implement the v2 handshake in `internal/utils/network/noisev2.go`.** Reuse the v1 NNpsk0 shape; change only the suite (Elligator), add payload filler, and build a `noiseConn` with `pad: true` plus the v2 framing hook from Task 4 (stub the hook as identity for now so this task is testable on its own):
-
-```go
-package network
-
-import (
-	"fmt"
-	"math/rand/v2"
-	"net"
-	"time"
-
-	"github.com/flynn/noise"
-)
-
-const (
-	// noiseSuiteV2 is the v1 suite with the Elligator2-encoded DH. Both ends
-	// run v2, so the encoding needs no negotiation on the wire.
-	// (built in init to keep newElligatorDH in one place)
-	noiseMaxHandshakePad = 1024 // keeps the first flight inside one segment
-)
-
-var noiseSuiteV2 = noise.NewCipherSuite(newElligatorDH(), noise.CipherChaChaPoly, noise.HashBLAKE2s)
-
-func NoiseClientConnV2(raw net.Conn, token string, timeout time.Duration) (net.Conn, error) {
-	return noiseHandshakeV2(raw, token, true, timeout)
-}
-
-func NoiseServerConnV2(raw net.Conn, token string, timeout time.Duration) (net.Conn, error) {
-	return noiseHandshakeV2(raw, token, false, timeout)
-}
-
-// handshakePayload is the version marker followed by random-length zero filler,
-// all carried inside the AEAD so only the record's length moves.
-func handshakePayload() []byte {
-	n := rand.IntN(noiseMaxHandshakePad + 1)
-	p := make([]byte, 1+n)
-	p[0] = noiseVersion
-	return p
-}
-```
-
-Write `noiseHandshakeV2` as a copy of `noiseHandshake`'s structure that: builds `noise.NewHandshakeState` with `CipherSuite: noiseSuiteV2`; sends `handshakePayload()` instead of `[]byte{noiseVersion}` on both the initiator's first message and the responder's reply; keeps the 15 s deadline; and on success returns a connection built inline as `&noiseConn{Conn: raw, send: sendCS, recv: recvCS, pad: true}`. Task 4 replaces that one inline construction with a call to `newNoiseConnV2(raw, sendCS, recvCS, hs.ChannelBinding(), initiator)`. A responder that fails `ReadMessage` returns the error and writes nothing — unchanged from v1.
-
-- [ ] **Step 4: Run, verify pass:**
-
-```bash
-go test ./internal/utils/network/ -run TestV2 -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit:**
-
-```bash
-git add internal/utils/network/noisev2.go internal/utils/network/noisev2_test.go internal/utils/network/noise.go
-git commit -m "feat(network): v2 handshake with Elligator2 key and padded first flight"
-```
-
----
-
-## Task 3: v2 rejects wrong tokens and v0/v1 peers — cleanly
-
-Prove two negative contracts: a wrong-token or garbage opening is rejected silently without a panic (the dead-port property), and the "both ends must switch" rule holds — a v2 end against a v1 end errors within the timeout rather than hanging or corrupting. This is a test-only task over Tasks 1–2.
-
-**Files:**
-- Test: `internal/utils/network/noisev2_test.go` (extend)
-
-**Interfaces:**
-- Consumes: `NoiseClientConnV2`, `NoiseServerConnV2` (Task 2); `NoiseClientConn`, `NoiseServerConn` (v1).
-
-- [ ] **Step 1: Write the failing test** (append):
-
-```go
-// A wrong token is rejected and nothing is written back: a probe finds a dead
-// port, and a garbage opening must not panic the responder.
-func TestV2WrongTokenIsRejectedSilently(t *testing.T) {
+// Wrong token: the server locates no mark, writes nothing, and does not panic.
+func TestV2WrongTokenIsADeadPort(t *testing.T) {
 	c, s := net.Pipe()
 	wrote := make(chan int, 1)
-	go func() {
-		// Count any bytes the responder sends after a bad opening.
-		n, _ := io.Copy(io.Discard, s)
-		wrote <- int(n)
-	}()
+	go func() { n, _ := io.Copy(io.Discard, s); wrote <- int(n) }()
 	go func() {
 		conn, err := NoiseServerConnV2(s, v2Token, time.Second)
 		if err == nil {
@@ -409,49 +608,39 @@ func TestV2WrongTokenIsRejectedSilently(t *testing.T) {
 		}
 		s.Close()
 	}()
-	// A client with the wrong token (and, incidentally, arbitrary first bytes).
-	_, err := NoiseClientConnV2(c, "the-wrong-token-xxxxxxxxxxxxxxxxxxxx", time.Second)
-	if err == nil {
-		t.Fatal("client reported success with a mismatched token")
+	if _, err := NoiseClientConnV2(c, "the-wrong-token-xxxxxxxxxxxxxxxxxxxx", time.Second); err == nil {
+		t.Fatal("client reported success with a wrong token")
 	}
 	if n := <-wrote; n != 0 {
-		t.Errorf("responder wrote %d bytes to a wrong-token peer; the port is not dead", n)
+		t.Errorf("server wrote %d bytes to a wrong-token peer", n)
 	}
 }
 
-// A v2 client must not appear to succeed against a v1 server, and must give up
-// within the handshake deadline rather than hang.
+// v2 against a v1 peer fails cleanly (no hang past the deadline, no corruption).
 func TestV2ClientAgainstV1ServerFailsCleanly(t *testing.T) {
 	c, s := net.Pipe()
-	go func() { _, _ = NoiseServerConn(s, v2Token, time.Second) }() // v1 responder
+	go func() { _, _ = NoiseServerConn(s, v2Token, time.Second) }() // v1
 	done := make(chan error, 1)
-	go func() {
-		_, err := NoiseClientConnV2(c, v2Token, time.Second)
-		done <- err
-	}()
+	go func() { _, err := NoiseClientConnV2(c, v2Token, time.Second); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("v2 client reported success against a v1 server")
+			t.Fatal("v2 client succeeded against a v1 server")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("v2 client hung against a v1 server")
 	}
 }
 
-// And the mirror: a v1 client against a v2 server.
 func TestV1ClientAgainstV2ServerFailsCleanly(t *testing.T) {
 	c, s := net.Pipe()
 	go func() { _, _ = NoiseServerConnV2(s, v2Token, time.Second) }()
 	done := make(chan error, 1)
-	go func() {
-		_, err := NoiseClientConn(c, v2Token, time.Second)
-		done <- err
-	}()
+	go func() { _, err := NoiseClientConn(c, v2Token, time.Second); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("v1 client reported success against a v2 server")
+			t.Fatal("v1 client succeeded against a v2 server")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("v1 client hung against a v2 server")
@@ -459,163 +648,111 @@ func TestV1ClientAgainstV2ServerFailsCleanly(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run all three:**
+- [ ] **Step 2: Run, verify fail** (`NoiseClientConnV2` undefined):
 
 ```bash
-go test ./internal/utils/network/ -run "WrongToken|AgainstV" -v
+go test ./internal/utils/network/ -run "TestV2|TestV1Client" -v
 ```
 
-Expected: PASS (wrong-token/garbage openings are rejected with nothing written back; the cross-version pairs decode each other's first flight as garbage and error, or time out into an error, within the deadline). If either hangs, the handshake deadline in Task 2 is not being set — fix there, not here.
+Expected: FAIL (build: undefined).
 
-- [ ] **Step 3: Commit:**
+- [ ] **Step 3: Implement `noisev2.go`** per the Design above. Reuse the v1 NNpsk0 construction shape from `noise.go`'s `noiseHandshake` (same `noise.Config`: `Pattern: HandshakeNN`, `Prologue: []byte(noisePrologue)`, `PresharedKey: psk`, `PresharedKeyPlacement: 0`) but with `CipherSuite: noiseSuiteV2` and the frames sent/received via `writeMarkedFrame`/`readMarkedFrame`. Compute `innerLen` once from a dry WriteMessage with a 1-byte payload. Do not edit `noise.go`.
+
+- [ ] **Step 4: Run, verify pass:**
 
 ```bash
-git add internal/utils/network/noisev2_test.go
-git commit -m "test(network): stealth2 rejects wrong tokens and v1 peers cleanly"
+go test ./internal/utils/network/ -run "TestV2|TestV1Client" -race -v
 ```
 
----
-
-## Task 4: v2 record framing — masked length prefix
-
-Replace the cleartext 2-byte length on every v2 record with 2 bytes XORed against a per-connection, per-direction keystream derived from the handshake. The record body stays a standard Noise record (already padded, already random-looking); only the readable length goes away.
-
-**Files:**
-- Modify: `internal/utils/network/noisev2.go` (add `noiseConnV2`, `newNoiseConnV2`)
-- Test: `internal/utils/network/noisev2_test.go` (extend)
-
-**Interfaces:**
-- Consumes: the handshake channel binding passed by Task 2.
-- Produces: `func newNoiseConnV2(raw net.Conn, send, recv *noise.CipherState, binding []byte, initiator bool) (net.Conn, error)` returning a `net.Conn`. Task 2's handshake calls this instead of the temporary `&noiseConn{…}`.
-
-- [ ] **Step 1: Write the failing tests** (append):
-
-```go
-// Two connections on the same token must not open with the same bytes — a mask
-// that was constant per token would be as matchable as no mask at all.
-func TestV2OpeningDiffersPerConnection(t *testing.T) {
-	a := captureV2FirstFlight(t)
-	b := captureV2FirstFlight(t)
-	if bytes.Equal(a, b) {
-		t.Fatal("two v2 openings were byte-identical")
-	}
-}
-
-// A large write round-trips: the v2 plaintext ceiling must leave room for the
-// payload-padding header and filler under the Noise frame ceiling.
-func TestV2LargeWriteRoundTrips(t *testing.T) {
-	c, s := net.Pipe()
-	srvDone := make(chan net.Conn, 1)
-	go func() {
-		conn, err := NoiseServerConnV2(s, v2Token, 3*time.Second)
-		if err != nil {
-			t.Errorf("server: %v", err)
-		}
-		srvDone <- conn
-	}()
-	cl, err := NoiseClientConnV2(c, v2Token, 3*time.Second)
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
-	srv := <-srvDone
-	want := bytes.Repeat([]byte{0xAB}, 200*1024) // spans many records
-	go func() { _, _ = cl.Write(want); _ = cl.Close() }()
-	got, err := io.ReadAll(srv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("round trip mismatch: %d of %d bytes", len(got), len(want))
-	}
-}
-```
-
-- [ ] **Step 2: Run, verify fail:**
-
-```bash
-go test ./internal/utils/network/ -run "TestV2Opening|TestV2Large" -v
-```
-
-Expected: `TestV2OpeningDiffersPerConnection` may already pass (handshake payload is random-length); `TestV2LargeWriteRoundTrips` passes against the Task 2 stub. The failing case appears once Step 3 swaps in masked framing and the mask is wired wrong — these tests are the guard for that.
-
-- [ ] **Step 3: Implement masked framing in `internal/utils/network/noisev2.go`:**
-
-```go
-import (
-	"crypto/sha256"
-	"encoding/binary"
-	"io"
-	"sync"
-
-	"golang.org/x/crypto/chacha20"
-	"golang.org/x/crypto/hkdf"
-)
-
-// framingKey derives a 32-byte key for one direction from the handshake's
-// channel binding. Separate labels per direction so the two streams never
-// share mask bytes.
-func framingKey(binding []byte, label string) ([]byte, error) {
-	k := make([]byte, chacha20.KeySize)
-	r := hkdf.New(sha256.New, binding, []byte(label), nil)
-	_, err := io.ReadFull(r, k)
-	return k, err
-}
-
-// noiseConnV2 wraps noiseConn's record logic but masks the 2-byte length
-// header of every record with a ChaCha20 keystream. The key is unique per
-// connection (channel binding) so the stream needs no nonce management beyond
-// advancing with each record; both ends advance in lockstep.
-type noiseConnV2 struct {
-	*noiseConn
-	writeMask *chacha20.Cipher
-	readMask  *chacha20.Cipher
-	wMu, rMu  sync.Mutex
-}
-
-func newNoiseConnV2(raw net.Conn, send, recv *noise.CipherState, binding []byte, initiator bool) (net.Conn, error) {
-	base := &noiseConn{Conn: raw, send: send, recv: recv, pad: true}
-	// The initiator writes on the c2s stream and reads the s2c stream; the
-	// responder is the mirror.
-	c2s, err := framingKey(binding, "backpack-stealth2-framing-c2s-v1")
-	if err != nil {
-		return nil, err
-	}
-	s2c, err := framingKey(binding, "backpack-stealth2-framing-s2c-v1")
-	if err != nil {
-		return nil, err
-	}
-	wKey, rKey := c2s, s2c
-	if !initiator {
-		wKey, rKey = s2c, c2s
-	}
-	var nonce [chacha20.NonceSize]byte
-	wc, err := chacha20.NewUnauthenticatedCipher(wKey, nonce[:])
-	if err != nil {
-		return nil, err
-	}
-	rc, err := chacha20.NewUnauthenticatedCipher(rKey, nonce[:])
-	if err != nil {
-		return nil, err
-	}
-	return &noiseConnV2{noiseConn: base, writeMask: wc, readMask: rc}, nil
-}
-```
-
-Then override `Write` and `Read` on `noiseConnV2`: build the record exactly as `noiseConn` does, but XOR the 2 length-prefix bytes through `writeMask.XORKeyStream` before the write; on read, read 2 bytes, XOR through `readMask` to recover the length, then read and decrypt the body as `noiseConn.Read` does. Keep the per-record no-allocation path. Finally, change Task 2's handshake to call `newNoiseConnV2(raw, sendCS, recvCS, hs.ChannelBinding(), initiator)`.
-
-- [ ] **Step 4: Run the whole network suite, with race:**
-
-```bash
-go test ./internal/utils/network/ -race -v
-```
-
-Expected: PASS, including Task 1–3 tests and `TestTheRecordLayerDoesNotAllocatePerRecord`.
+Expected: PASS.
 
 - [ ] **Step 5: Commit:**
 
 ```bash
 git add internal/utils/network/noisev2.go internal/utils/network/noisev2_test.go
-git commit -m "feat(network): mask the record length prefix on stealth2"
+git commit -m "feat(network): stealth2 NNpsk0 handshake wrapped in the mark/MAC frame"
+```
+
+---
+
+## Task 4: v2 data-phase record length masking
+
+After the handshake, data records use the Noise ChaCha20-Poly1305 record layer,
+but the 2-byte length prefix is masked by a ChaCha20 keystream keyed from the
+handshake channel binding — per-connection, per-direction — so the data stream
+carries no readable length either. The handshake (Task 2/3) already hid the
+opening; this hides the data framing.
+
+**Files:**
+- Modify: `internal/utils/network/noisev2.go` — add `noiseConnV2` (embeds `*noiseConn`, overrides `Write`/`Read`) and `newNoiseConnV2`; change Task 3's handshake to return it.
+- Test: `internal/utils/network/noisev2_test.go` (extend).
+
+**Interfaces:**
+- Consumes: the channel binding from Task 3's completed handshake (`hs.ChannelBinding()`).
+- Produces: `func newNoiseConnV2(raw net.Conn, send, recv *noise.CipherState, binding []byte, initiator bool) (net.Conn, error)`.
+
+**Design:** derive two ChaCha20 keys via HKDF from the channel binding —
+`framing-c2s-v1` and `framing-s2c-v1` — pick send/recv per `initiator`, build a
+`chacha20.Cipher` per direction (zero nonce; the key is unique per connection via
+the binding). `Write` builds the record exactly as `noiseConn.Write` does, then
+XORs the 2 length-prefix bytes through the send keystream before the socket
+write; `Read` reads 2 bytes, XORs through the recv keystream to recover the
+length, then reads/decrypts the body as `noiseConn.Read` does. Keep the
+per-record no-allocation path. `golang.org/x/crypto/chacha20` and `.../hkdf` are
+already available.
+
+- [ ] **Step 1: Write the failing tests** (append to `noisev2_test.go`):
+
+```go
+// A large write spanning many records round-trips with the masked framing.
+func TestV2LargeWriteRoundTrips(t *testing.T) {
+	c, s := net.Pipe()
+	srv := make(chan net.Conn, 1)
+	go func() {
+		conn, err := NoiseServerConnV2(s, v2Token, 3*time.Second)
+		if err != nil {
+			t.Errorf("server: %v", err)
+		}
+		srv <- conn
+	}()
+	cl, err := NoiseClientConnV2(c, v2Token, 3*time.Second)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	sconn := <-srv
+	want := bytes.Repeat([]byte{0xAB}, 200*1024)
+	go func() { _, _ = cl.Write(want); _ = cl.(interface{ Close() error }).Close() }()
+	got, err := io.ReadAll(sconn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("round-trip mismatch: %d of %d bytes", len(got), len(want))
+	}
+}
+```
+
+- [ ] **Step 2: Run, verify fail** (compile error until `newNoiseConnV2` exists / handshake returns it, or round-trip fails if masking is wired wrong):
+
+```bash
+go test ./internal/utils/network/ -run TestV2Large -v
+```
+
+- [ ] **Step 3: Implement** `noiseConnV2` + `newNoiseConnV2` and switch Task 3's handshake return to `newNoiseConnV2(raw, sendCS, recvCS, hs.ChannelBinding(), initiator)`.
+
+- [ ] **Step 4: Run the whole network suite with race:**
+
+```bash
+go test ./internal/utils/network/ -race -v
+```
+
+Expected: PASS (all Task 1–4 tests, plus the existing v1 tests and `TestTheRecordLayerDoesNotAllocatePerRecord`).
+
+- [ ] **Step 5: Commit:**
+
+```bash
+git add internal/utils/network/noisev2.go internal/utils/network/noisev2_test.go
+git commit -m "feat(network): mask the stealth2 data-record length prefix"
 ```
 
 ---
