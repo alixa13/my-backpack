@@ -59,6 +59,8 @@ those established techniques rather than inventing wire tricks.
 | Which tell | The opening-packet fingerprint (plus the key tells it exposes) |
 | Rollout | Opt-in; both ends switch once upgraded. Old `stealth` stays byte-for-byte unchanged. May sit first in a fallback chain with old `stealth` behind it. |
 | Key tells | Elligator2 representative for the ephemeral key (fixes the fixed-bit and on-curve tells in this one wire break) |
+| Config surface | A distinct transport name, `stealth2`, rather than a mode flag on `stealth` |
+| Elligator2 impl | A vetted third-party library (`gitlab.com/yawning/edwards25519-extra/elligator2`, by the obfs4 author); not hand-rolled |
 
 ## Architecture
 
@@ -114,14 +116,19 @@ fixes the properties, not the offsets.
 
 ## Negotiation, config, and rollout
 
-- A new per-tunnel option (working name `stealth_opening = "v2"`, default off)
-  selects the format. Validation lives beside the existing transport checks in
-  `config/`.
+- v2 is a **distinct transport name, `stealth2`**, selected like any other
+  transport rather than a sub-flag on `stealth`. It joins the transport enums
+  (`reverseTransports`, `fallbackCapable`, and every place a transport name is
+  switched on). Validation lives beside the existing transport checks in
+  `config/`. Chosen over a `stealth`+mode flag because it drops straight into the
+  fallback chain and the existing selection code with no new concept — at the
+  cost of adding a name everywhere transports are enumerated, which the
+  source-reading parity tests already guard.
 - No wire negotiation: v2 is incompatible with v0/v1 by construction (an old
   peer reads the first two bytes as a length and fails). This is why both ends
   must be set. Documented alongside the flag.
-- **Fallback interaction:** v2-stealth is a distinct chain candidate. A chain of
-  `[stealth-v2, stealth]` lets an operator prefer the hardened opening and fall
+- **Fallback interaction:** `stealth2` is a distinct chain candidate. A chain of
+  `[stealth2, stealth]` lets an operator prefer the hardened opening and fall
   back to today's format where the far end is older — consistent with
   `config/fallback.go`'s existing model. `ValidateFallbackTransports` must treat
   the two as distinct entries.
@@ -131,11 +138,13 @@ fixes the properties, not the offsets.
 
 ## Dependencies
 
-- A vetted Elligator2 implementation for Curve25519. Candidates: a maintained Go
-  module, or the primitive as used by `filippo.io`-style libraries. **Open
-  question** below. We do not implement the field arithmetic ourselves; a
-  mistake there is a silent distinguisher, which is the whole thing we are
-  removing.
+- A vetted Elligator2 implementation for Curve25519 — **chosen:**
+  `gitlab.com/yawning/edwards25519-extra/elligator2` (by the obfs4 author, used
+  in production circumvention tooling). We do not implement the field arithmetic
+  ourselves; a mistake there is a silent distinguisher, which is the whole thing
+  we are removing. The first plan step pins the version against Go 1.26.6 and
+  confirms its current API — this environment has no Go toolchain, so that
+  verification happens where one is available.
 
 ## Security considerations
 
@@ -171,14 +180,12 @@ fixes the properties, not the offsets.
   (`noisealloc_test.go`) and run the suite under `-race`.
 - **e2e.** Add a v2-stealth row to the transport matrix (`internal/e2e`).
 
-## Open questions for review
+## Open questions
 
-1. **Elligator2 library choice** — which vetted implementation; acceptable to add
-   to `go.mod`? This gates the implementation plan.
-2. **Config surface** — a new `stealth_opening` key, or fold it into the existing
-   transport field as a distinct transport name (e.g. `stealth2`)? The latter is
-   simpler for the fallback chain but adds a transport name everywhere one is
-   enumerated.
-3. **ADR** — distil the accepted version into `docs/adr/0006-*` and add the new
-   ingress row to ADR 0004's table (opening timing/bounds are unchanged, but the
-   row should name v2).
+1. ~~Elligator2 library choice~~ — **resolved:**
+   `gitlab.com/yawning/edwards25519-extra/elligator2`, added to `go.mod`.
+   Version pinned and API confirmed as the first plan step.
+2. ~~Config surface~~ — **resolved:** a distinct transport name, `stealth2`.
+3. **ADR (follow-up)** — distil the accepted version into `docs/adr/0006-*` and
+   add a row naming `stealth2` to ADR 0004's ingress table (opening
+   timing/bounds are unchanged).
