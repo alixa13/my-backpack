@@ -28,6 +28,10 @@ given at the bottom of this page.
 | WSS Mux | WebSocket | ✅ (TLS) | ✅ | certificate | [→](../tutorial/websocket-tls.md) |
 | **xDi (ICMP)** | Experimental | ✅ (token key) | ✅ | Linux, root, ICMP open | [→](../tutorial/xdi-icmp.md) |
 
+[TCP + Stealth2](#tcp--stealth2) is Stealth with a hardened opening. It is not in
+the table, or the count, because the wizard and the web panel do not offer it
+yet; it is set in the config file.
+
 "Encrypted handshake" means the tunnel's own credential is protected on the
 wire. On the plain transports (TCP, TCP Mux, UDP, WS, WS Mux) the token is sent
 as-is, so use one of the encrypted transports on an untrusted path. It is not
@@ -82,6 +86,40 @@ without the token cannot even complete the handshake: the server replies with
 nothing, so a port scan finds a dead port rather than a service. Reach for it
 where filtering is heavy and you want the connection itself to be unremarkable.
 Costs a little more CPU than plain TCP for the encryption.
+
+### TCP + Stealth2
+Stealth with a **hardened opening**, for a path where even the first bytes of a
+Stealth connection are being matched. Stealth's stream looks like random bytes,
+but its start did not: the first message was a near-constant size behind a
+readable two-byte length, and began with a key whose top bit is always 0. Stealth2
+sends that key as a uniform Elligator2 representative and wraps the handshake in
+a token-keyed frame — random padding, a mark that delimits it, a MAC — with no
+length on the wire, so the first flight is random bytes of a size that varies
+from one connection to the next. Later records have their length prefix masked
+too. Underneath it is Stealth's own handshake and record layer, keyed on the
+token the same way.
+
+A wrong token, a mangled opening and a replayed capture are all answered the
+same way — silence until the handshake deadline — so a prober learns nothing from
+a failure. The opening carries the hour, so the two ends' clocks must agree to
+within about an hour — a skewed clock fails like a wrong token, in silence.
+**Opt-in, and both ends must run it**: nothing is negotiated on the wire, and a
+Stealth peer cannot read a Stealth2 opening. It can lead a
+[fallback chain](transport-fallback.md) with `stealth` behind it, the same list
+on both ends:
+
+```toml
+[server]                       # and [client], the same on both ends
+transport           = "stealth2"
+fallback_transports = ["stealth"]
+```
+
+**Config file only for now** — the setup wizard, the web panel and the menu do
+not list it yet, so it is set by editing the file (`transport = "stealth2"`). The
+direct tunnel does not offer it either. It costs a little more than Stealth at
+connect time — an Elligator key and a first flight of up to 8 KB, mostly
+padding — and the stream after that is Stealth's. The reasoning is in
+[ADR 0006](adr/0006-stealth2-opening.md).
 
 ### TCP + PCK
 A TCP transport that **does not use the kernel's TCP stack**. It builds its own
@@ -235,7 +273,9 @@ from **Edit → Certificate**.
 
 **خانوادهٔ TCP:** *TCP* ساده و سریع (نقطهٔ شروع)؛ *TCP Mux* برای سرویس‌هایی با
 اتصال‌های کوتاه و زیاد؛ *TCP + Stealth* رمزنگاری Noise بدون هیچ fingerprint —
-بهترین گزینه برای فیلترینگ سنگین؛ *TCP + PCK* که اصلاً از استک TCP کرنل استفاده
+بهترین گزینه برای فیلترینگ سنگین؛ *TCP + Stealth2* همان Stealth با شروع اتصالی
+که هیچ مقدار ثابتی برای تطبیق ندارد (اختیاری، هر دو سر باید آن را بزنند، و فعلاً
+فقط از فایل پیکربندی: `transport = "stealth2"`)؛ *TCP + PCK* که اصلاً از استک TCP کرنل استفاده
 نمی‌کند و برای وقتی است که تونل TCP وصل می‌شود و بعد بی‌دلیل می‌میرد.
 
 **خانوادهٔ UDP:** *UDP* خام (بدون قابلیت اطمینان)؛ *UDP + KCP + FEC* تونل

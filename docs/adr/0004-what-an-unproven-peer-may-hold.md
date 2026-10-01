@@ -23,6 +23,7 @@ displace what a proven peer holds. Each ingress, and what bounds it:
 | Ingress | Before the token is proved | Bound |
 |---|---|---|
 | reverse tcp, tcpmux, stealth — tunnel port | announcement 10 s; under stealth the Noise handshake first, up to 25 s in all | `acceptloop.Gate`: 128 per host (IPv6 per /64), 1024 in all |
+| reverse stealth2 — tunnel port | the mark/MAC opening and the Noise handshake first, up to 25 s in all; a failed opening is held, silent, to the 15 s handshake deadline (`holdDeadPort`) | `acceptloop.Gate`, as stealth: 128 per host (IPv6 per /64), 1024 in all. A held connection keeps its place, so a probe flood fills the gate — which a proven host bypasses — rather than escaping it |
 | reverse udp — control port | control claim, 15 s | same gate; claims judged side by side |
 | reverse quic — streams of one connection | announcement, 15 s | at most 8 streams waiting until one proves the token; a connection that opens more is closed |
 | reverse ws, wss, wsmux — HTTP | request headers | `ReadHeaderTimeout`; the token is checked before the upgrade |

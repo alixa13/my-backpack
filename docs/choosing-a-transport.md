@@ -20,6 +20,7 @@ on this route drop ping while carrying tunnel traffic perfectly well. It then:
 | The link is clean | **TCP Mux** |
 | You need to look like a browser loading HTTPS | **WSS** — sends a real Chrome TLS fingerprint |
 | The connection itself is being filtered | **TCP + Stealth** — encrypted with no fingerprint at all |
+| Even Stealth's first bytes are being matched | **TCP + Stealth2** — Stealth with a hardened opening; both ends, config file only |
 
 **KCP runs over UDP** — if your provider filters UDP, it will not help; pick a
 TCP-based transport instead.
@@ -27,7 +28,13 @@ TCP-based transport instead.
 ## The families
 
 - **TCP** — reliable stream. `TCP Mux` runs many streams over one connection;
-  `TCP + Stealth` wraps it in a Noise layer with no fingerprint.
+  `TCP + Stealth` wraps it in a Noise layer with no fingerprint. `TCP +
+  Stealth2` is the same layer with an opening that carries no constant to match
+  — no readable length, a key that is uniform random, a first flight whose size
+  varies. It is opt-in, both ends must run it, and it can lead a fallback chain
+  with `stealth` behind it. The Link Test does not recommend it, and the setup
+  wizard and web panel do not list it yet: set `transport = "stealth2"` in the
+  config file ([details](transports.md#tcp--stealth2)).
 - **UDP** — datagrams. `UDP + KCP + FEC` is a low-latency gaming tunnel: reliable delivery with always-on FEC.
 - **WebSocket** — looks like web traffic. `WSS` / `WSS Mux` add TLS with a
   browser fingerprint and bind the credential to the TLS session.
@@ -50,7 +57,8 @@ Change a tunnel's transport any time from **Edit → Change transport**.
 
 **خلاصهٔ کوتاه:** مسیر پرافت → **UDP + KCP + FEC**؛ لینک تمیز → **TCP Mux**؛
 می‌خواهی شبیه مرورگر روی HTTPS باشی → **WSS**؛ خودِ اتصال فیلتر می‌شود →
-**TCP + Stealth**.
+**TCP + Stealth**؛ حتی بایت‌های اول Stealth هم تطبیق داده می‌شود → **TCP + Stealth2**
+(اختیاری، هر دو سر، فعلاً فقط از فایل پیکربندی).
 
 **KCP روی UDP اجرا می‌شود** — اگر سرویس‌دهنده‌ات UDP را فیلتر کند فایده ندارد و
 باید سراغ ترنسپورت‌های TCP بروی. ترنسپورت هر تونل را هر وقت خواستی از

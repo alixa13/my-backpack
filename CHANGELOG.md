@@ -2,6 +2,33 @@
 
 All notable changes to Backpack are documented here.
 
+## v1.8.6 — 2026-10-02
+
+### Added
+
+- **`stealth2`, a reverse transport whose opening has no constant to match.**
+  `stealth` hides its stream, but its first bytes were a near-constant 49-byte
+  message behind a readable two-byte length, starting with a key whose top bit is
+  always 0. `stealth2` sends that key as a uniform Elligator2 representative
+  (`internal/utils/x25519ell2`, vendored, GPL-3.0 header kept), wraps the
+  handshake in a token-keyed `m | P | M | MAC` frame — random padding of up to
+  8 KB, a mark that delimits it, a MAC bound to the hour — so no length or type is
+  on the wire and the first flight varies in size, and masks the length prefix of
+  every record after it. A wrong token, a bad MAC and a replayed opening (a
+  bounded filter remembers the accepted ones for four hours) are all met with
+  silence until the handshake deadline, so a probe learns nothing from a failure.
+  Inside the frame it is `stealth`'s own Noise `NNpsk0` handshake, keyed on the
+  token. **Opt-in, and both ends must run it**: nothing is negotiated, `stealth`
+  is byte-for-byte unchanged, and a `stealth` peer cannot read a `stealth2`
+  opening. It can lead a fallback chain with `stealth` behind it
+  (`fallback_transports = ["stealth"]`). The two ends' clocks must agree to within
+  about an hour. **Config file only for now** — `transport = "stealth2"`; the
+  setup wizard, the web panel, the menu, the share links and the Link Test do not
+  list it yet, and the direct tunnel's `stealth` is still the first format. A
+  failed `stealth2` opening is held to the handshake deadline but stays inside the
+  accept gate, so a probe flood fills the gate rather than escaping it. See
+  `docs/adr/0006-stealth2-opening.md`.
+
 ## v1.8.5 — 2026-09-30
 
 ### Added
