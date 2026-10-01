@@ -16,10 +16,10 @@ import (
 // question asked after any change to the data path, and answering it meant
 // reading the transport list out of six files and hoping none had been missed.
 //
-// tcpTransports in transport_test.go lists seven. The full set is ten, and the
-// three it leaves out are not exotic: wss and wssmux terminate TLS, and udp
-// carries datagrams. Each has its own file for its own reason; none of them
-// appeared in a list of "every transport".
+// tcpTransports in transport_test.go lists seven. The full set is eleven, and the
+// four it leaves out are not exotic: wss and wssmux terminate TLS, udp carries
+// datagrams, and stealth2 is stealth with a hardened opening. Each has its own
+// file or its own reason; none of them appeared in a list of "every transport".
 //
 // The raw-socket carriers — xdi, pck, spoof, sni — are deliberately absent.
 // They need CAP_NET_RAW and a packet socket, which a test process does not
@@ -30,16 +30,17 @@ import (
 // allReverseTransports is every transport the reverse tunnel can be configured
 // with that can run without elevated privileges.
 var allReverseTransports = []string{
-	"tcp",     // plain
-	"tcpmux",  // smux over tcp
-	"stealth", // tcp with a Noise record layer
-	"ws",      // an HTTP upgrade
-	"wss",     // the same, with TLS
-	"wsmux",   // smux over ws
-	"wssmux",  // smux over wss
-	"kcp",     // reliable, over udp
-	"quic",    // quic streams
-	"udp",     // datagrams
+	"tcp",      // plain
+	"tcpmux",   // smux over tcp
+	"stealth",  // tcp with a Noise record layer
+	"stealth2", // stealth with the hardened opening: Elligator2 key, mark/MAC, masked length
+	"ws",       // an HTTP upgrade
+	"wss",      // the same, with TLS
+	"wsmux",    // smux over ws
+	"wssmux",   // smux over wss
+	"kcp",      // reliable, over udp
+	"quic",     // quic streams
+	"udp",      // datagrams
 }
 
 // Every transport: the tunnel comes up and a payload survives it byte for byte.
