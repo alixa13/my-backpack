@@ -3,6 +3,7 @@ module github.com/backpack/backpack
 go 1.26.6
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/cilium/ebpf v0.22.0
 	github.com/flynn/noise v1.1.0
@@ -14,6 +15,7 @@ require (
 	github.com/sirupsen/logrus v1.10.2
 	github.com/xtaci/kcp-go/v5 v5.6.72
 	github.com/xtaci/smux v1.5.27
+	gitlab.com/yawning/edwards25519-extra v0.0.0-20231005122941-2149dcafc266
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.48.0
