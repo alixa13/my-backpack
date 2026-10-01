@@ -6,7 +6,7 @@
 
 **Architecture:** A second Noise variant in `internal/utils/network`, reached through new `…V2` constructors so the v1 path is untouched. v2 encodes the X25519 ephemeral key as an Elligator2 representative (uniform bytes), pads the handshake payload inside the AEAD, and masks every record's 2-byte length prefix with a per-connection keystream derived from the handshake's channel binding. `stealth2` is a distinct transport name wired through config and the reverse client/server exactly as `stealth` is.
 
-**Tech Stack:** Go 1.26.6, `github.com/flynn/noise` v1.1.0, `golang.org/x/crypto` (hkdf, chacha20 — already present), and a new dependency `gitlab.com/yawning/edwards25519-extra/elligator2`.
+**Tech Stack:** Go 1.26.6, `github.com/flynn/noise` v1.1.0, `golang.org/x/crypto` (hkdf, chacha20, curve25519 — already present), vendored `x25519ell2` (GPL-3.0, AGPL-compatible), and its deps `filippo.io/edwards25519` + `gitlab.com/yawning/edwards25519-extra`.
 
 **Spec:** `docs/superpowers/specs/2026-10-01-stealth-v2-opening-design.md` — read it alongside this plan.
 
@@ -15,7 +15,7 @@
 - Go version floor: **1.26.6** (`go.mod`). The Elligator2 library must build against it.
 - **Do not modify** the v1 wire path: `noiseSuite`, `noisePrologue`, `noisePSK`, `NoiseClientConn`, `NoiseServerConn`, the existing `noiseConn` framing, or any v0/v1 negotiation. v2 is additive.
 - Keyed only from the tunnel token. No new key material, no new config secret.
-- Elligator2 field arithmetic is **not** hand-rolled — it comes from the pinned library. Our code only calls into it.
+- Elligator2 field arithmetic is **not** hand-rolled or reimplemented from memory — vendor yawning's `x25519ell2` (GPL-3.0; keep its license header and attribution, combined under AGPL-3.0). Our code only wraps it.
 - `stealth2` must appear everywhere a transport name is enumerated, or the source-reading parity tests (`internal/client/transport/parity_test.go`) fail by design.
 - Scope is the **reverse** transport. Direct-tunnel `stealth2` is an explicit follow-up, not in this plan.
 
@@ -31,24 +31,39 @@
 
 ## Task 1: Elligator2 key-encoding DH wrapper
 
-Wrap `noise.DH25519` so the ephemeral public key on the wire is a uniform Elligator2 representative and the peer's representative is mapped back before the DH. Used only by the v2 suite.
+Vendor yawning's vetted both-direction X25519 Elligator2 implementation, then wrap it as a `noise.DHFunc` so the ephemeral public key on the wire is a uniform representative and the peer's representative is mapped back before the DH. Used only by the v2 suite.
+
+**Why vendor:** no importable standalone library does the *encode* direction (`edwards25519-extra/elligator2` decodes only; `agl/ed25519/extra25519` is gone from its module; obfs4's lives in an `internal/` package Go won't let us import). The vetted implementation is yawning's `x25519ell2` (~180 LOC, GPL-3.0 — **compatible with BackPack's AGPL-3.0**, combined work stays AGPL-3.0). We copy it in with its header and attribution intact rather than reimplement field arithmetic, where a subtle bug is a silent distinguisher.
 
 **Files:**
-- Modify: `go.mod`, `go.sum` (add `gitlab.com/yawning/edwards25519-extra`)
+- Modify: `go.mod`, `go.sum` (add `filippo.io/edwards25519`, `gitlab.com/yawning/edwards25519-extra`)
+- Create: `internal/utils/x25519ell2/x25519ell2.go` — vendored verbatim from `gitlab.com/yawning/obfs4.git/internal/x25519ell2@v0.0.0-20231012084234-c3e2d44b1033`, GPL-3.0 header preserved.
+- Create: `internal/utils/x25519ell2/x25519ell2_test.go` — its vendored test, unmodified.
+- Create: `internal/utils/x25519ell2/VENDOR.md` — upstream module, version, license note (GPL-3.0, combined under AGPL-3.0).
 - Create: `internal/utils/network/elligator.go`
 - Test: `internal/utils/network/elligator_test.go`
 
 **Interfaces:**
-- Produces: `func newElligatorDH() noise.DHFunc` — a `noise.DHFunc` with `DHLen() == 32` and `DHName() == "25519"`, whose `GenerateKeypair` returns a `noise.DHKey` whose `Public` is a 32-byte uniform representative, and whose `DH(priv, peerRepr)` returns the X25519 shared secret.
+- Consumes (from the vendored package): `func ScalarBaseMult(publicKey, representative, privateKey *[32]byte, tweak byte) bool` (encode; returns false ~50% of the time → caller retries) and `func RepresentativeToPublicKey(publicKey, representative *[32]byte)` (decode).
+- Produces: `func newElligatorDH() noise.DHFunc` — `DHLen() == 32`, `DHName() == "25519"`, whose `GenerateKeypair` returns a `noise.DHKey` whose `Public` is the 32-byte uniform representative, and whose `DH(priv, peerRepr)` returns the X25519 shared secret.
 
-- [ ] **Step 1: Pin the dependency and confirm its API.** Where a Go toolchain is available:
+- [ ] **Step 1: Vendor the implementation and pin deps.** The toolchain is installed (`~/go-toolchain/go`, on PATH):
 
 ```bash
+# Cache the upstream WITHOUT adding it as a dependency, then copy the two files.
+go mod download gitlab.com/yawning/obfs4.git@v0.0.0-20231012084234-c3e2d44b1033
+MOD="$(go env GOMODCACHE)/gitlab.com/yawning/obfs4.git@v0.0.0-20231012084234-c3e2d44b1033/internal/x25519ell2"
+mkdir -p internal/utils/x25519ell2
+cp "$MOD/x25519ell2.go" "$MOD/x25519ell2_test.go" internal/utils/x25519ell2/
+chmod u+w internal/utils/x25519ell2/*.go   # module-cache files are read-only
+# The vendored file imports these two; make them real deps.
+go get filippo.io/edwards25519@latest
 go get gitlab.com/yawning/edwards25519-extra@latest
-go doc gitlab.com/yawning/edwards25519-extra/elligator2
+go mod tidy
+go test ./internal/utils/x25519ell2/ -v    # the vendored test must pass unmodified
 ```
 
-Record the exact map symbols (point→representative and representative→point for the Montgomery/Curve25519 flavor) — they are the one external seam Step 3 fills in.
+Then write `internal/utils/x25519ell2/VENDOR.md` naming the upstream module, version `v0.0.0-20231012084234-c3e2d44b1033`, the GPL-3.0 license, and that it is combined under BackPack's AGPL-3.0. Do not edit the vendored `.go` files (keep `package x25519ell2` and its imports).
 
 - [ ] **Step 2: Write the failing test** `internal/utils/network/elligator_test.go`:
 
@@ -116,23 +131,26 @@ go test ./internal/utils/network/ -run TestElligator -v
 
 Expected: FAIL, build error `undefined: newElligatorDH`.
 
-- [ ] **Step 4: Implement `internal/utils/network/elligator.go`.** Fill the two `elligator2.*` calls with the symbols recorded in Step 1:
+- [ ] **Step 4: Implement `internal/utils/network/elligator.go`:**
 
 ```go
 package network
 
 import (
+	"crypto/rand"
 	"fmt"
 	"io"
 
 	"github.com/flynn/noise"
 	"golang.org/x/crypto/curve25519"
-	// elligator2 "gitlab.com/yawning/edwards25519-extra/elligator2" // symbols confirmed in Step 1
+
+	"github.com/backpack/backpack/internal/utils/x25519ell2"
 )
 
-// elligatorDH is noise.DH25519 with the public key carried on the wire as a
-// uniform Elligator2 representative instead of a raw X25519 point. Only the v2
-// suite uses it; v1 keeps stock DH25519.
+// elligatorDH is noise.DH25519 with the ephemeral public key carried on the
+// wire as a uniform Elligator2 representative instead of a raw X25519 point.
+// Only the v2 suite uses it; v1 keeps stock DH25519. The representative math is
+// the vendored, vetted x25519ell2 (see internal/utils/x25519ell2/VENDOR.md).
 type elligatorDH struct{}
 
 func newElligatorDH() noise.DHFunc { return elligatorDH{} }
@@ -142,40 +160,39 @@ func (elligatorDH) DHName() string { return "25519" } // keep the suite name sta
 
 func (elligatorDH) GenerateKeypair(rng io.Reader) (noise.DHKey, error) {
 	if rng == nil {
-		return noise.DHKey{}, fmt.Errorf("elligator: nil rng")
+		rng = rand.Reader
 	}
-	// Only ~half of X25519 public points have a representative. Draw a scalar,
-	// try to encode its public key, and retry until one does. The loop is
-	// bounded so a broken rng cannot spin forever.
+	// Only ~half of keys have a representative; retry until one does. A random
+	// tweak byte fills the representative's high bits so it is uniform over all
+	// 32 bytes. The loop is bounded so a broken rng cannot spin forever.
 	for i := 0; i < 64; i++ {
-		var priv [32]byte
+		var priv, pub, repr [32]byte
 		if _, err := io.ReadFull(rng, priv[:]); err != nil {
 			return noise.DHKey{}, err
 		}
-		pub, err := curve25519.X25519(priv[:], curve25519.Basepoint)
-		if err != nil {
-			continue
+		var tweak [1]byte
+		if _, err := io.ReadFull(rng, tweak[:]); err != nil {
+			return noise.DHKey{}, err
 		}
-		repr, ok := pointToRepresentative(pub) // elligator2 encode (Step 1 symbol)
-		if !ok {
-			continue
+		if x25519ell2.ScalarBaseMult(&pub, &repr, &priv, tweak[0]) {
+			return noise.DHKey{Private: priv[:], Public: repr[:]}, nil
 		}
-		return noise.DHKey{Private: priv[:], Public: repr}, nil
 	}
 	return noise.DHKey{}, fmt.Errorf("elligator: no representable key in 64 tries")
 }
 
 func (elligatorDH) DH(privkey, peerRepr []byte) ([]byte, error) {
-	peerPub := representativeToPoint(peerRepr) // elligator2 decode (Step 1 symbol)
-	return curve25519.X25519(privkey, peerPub)
+	if len(peerRepr) != 32 {
+		return nil, fmt.Errorf("elligator: peer representative is %d bytes", len(peerRepr))
+	}
+	var repr, peerPub [32]byte
+	copy(repr[:], peerRepr)
+	x25519ell2.RepresentativeToPublicKey(&peerPub, &repr)
+	return curve25519.X25519(privkey, peerPub[:])
 }
-
-// pointToRepresentative / representativeToPoint wrap the pinned elligator2
-// library for the Curve25519 (Montgomery) flavor. Keeping them here means the
-// external API lives behind one seam that the tests above exercise directly.
 ```
 
-Implement `pointToRepresentative(pub []byte) (repr []byte, ok bool)` and `representativeToPoint(repr []byte) []byte` with the confirmed library calls. `curve25519` is already available via `golang.org/x/crypto`.
+Note: `x25519ell2.ScalarBaseMult` deliberately does **not** cofactor-clear, so its public key differs from `curve25519.X25519(priv, base)` — never mix the two. Both ends run this same DHFunc, so the keys are self-consistent and `DH` agrees; `TestElligatorDHRoundTrips` is what proves it.
 
 - [ ] **Step 5: Run the tests, verify they pass:**
 
@@ -188,8 +205,8 @@ Expected: PASS.
 - [ ] **Step 6: Commit:**
 
 ```bash
-git add go.mod go.sum internal/utils/network/elligator.go internal/utils/network/elligator_test.go
-git commit -m "feat(network): Elligator2 key-encoding DH wrapper for stealth2"
+git add go.mod go.sum internal/utils/x25519ell2/ internal/utils/network/elligator.go internal/utils/network/elligator_test.go
+git commit -m "feat(network): vendor x25519ell2 and wrap it as a noise DHFunc for stealth2"
 ```
 
 ---
@@ -775,6 +792,7 @@ git commit -m "docs: document stealth2 and record ADR 0006"
 
 ## Notes for the executor
 
-- **No Go toolchain in the authoring environment.** Every `go test` / `go get` step must run where Go 1.26.6 is installed. Do not mark a step done without seeing its output there.
-- **The one external seam is Task 1 Step 1** (the exact `elligator2` symbols). Confirm it before writing Task 1 Step 4; everything downstream assumes `newElligatorDH()` works.
+- **Go 1.26.6 is installed** at `~/go-toolchain/go`, symlinked into `~/.local/bin` (on PATH for plain non-login shells, which is how tool/subagent shells start). `go test` / `go get` work directly; `GOTOOLCHAIN=local` is set in the profile.
+- **Task 1 vendors `x25519ell2`** (both-direction Elligator2). Its own vendored test must pass unmodified before wrapping it; everything downstream assumes `newElligatorDH()` works. Upstream is GPL-3.0, combined under our AGPL-3.0 — preserve the header.
+- The module path for internal imports is `github.com/backpack/backpack` (see `go.mod`).
 - Run `go test ./... -race` once after Task 6 and again after Task 7.

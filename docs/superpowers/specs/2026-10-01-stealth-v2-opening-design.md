@@ -60,7 +60,7 @@ those established techniques rather than inventing wire tricks.
 | Rollout | Opt-in; both ends switch once upgraded. Old `stealth` stays byte-for-byte unchanged. May sit first in a fallback chain with old `stealth` behind it. |
 | Key tells | Elligator2 representative for the ephemeral key (fixes the fixed-bit and on-curve tells in this one wire break) |
 | Config surface | A distinct transport name, `stealth2`, rather than a mode flag on `stealth` |
-| Elligator2 impl | A vetted third-party library (`gitlab.com/yawning/edwards25519-extra/elligator2`, by the obfs4 author); not hand-rolled |
+| Elligator2 impl | Vendor yawning's `x25519ell2` (GPL-3.0, compatible with our AGPL-3.0; both directions, ~180 LOC + its own test); deps `filippo.io/edwards25519` + `edwards25519-extra`. Not hand-rolled, not reimplemented from memory |
 
 ## Architecture
 
@@ -138,13 +138,20 @@ fixes the properties, not the offsets.
 
 ## Dependencies
 
-- A vetted Elligator2 implementation for Curve25519 — **chosen:**
-  `gitlab.com/yawning/edwards25519-extra/elligator2` (by the obfs4 author, used
-  in production circumvention tooling). We do not implement the field arithmetic
-  ourselves; a mistake there is a silent distinguisher, which is the whole thing
-  we are removing. The first plan step pins the version against Go 1.26.6 and
-  confirms its current API — this environment has no Go toolchain, so that
-  verification happens where one is available.
+- **Resolved by investigation (2026-10-01).** `edwards25519-extra/elligator2`
+  provides only the decode direction (representative→point); the encode
+  (point→representative) we need is in no importable standalone library
+  (`agl/ed25519/extra25519` is gone from its module; obfs4's lives in an
+  `internal/` package). The vetted both-direction implementation is yawning's
+  `x25519ell2` (`ScalarBaseMult` encode with rejection sampling +
+  `RepresentativeToPublicKey` decode), ~180 LOC, **GPL-3.0 — compatible with
+  BackPack's AGPL-3.0** (the combined work is AGPL-3.0). Decision: **vendor**
+  `x25519ell2.go` and its test into `internal/utils/x25519ell2/`, license header
+  and attribution preserved, rather than reimplement the field arithmetic from
+  memory — a mistake there is a silent distinguisher, the whole thing we are
+  removing. It pulls `filippo.io/edwards25519` and
+  `gitlab.com/yawning/edwards25519-extra`. A Go 1.26.6 toolchain is installed
+  locally, so this builds and tests here.
 
 ## Security considerations
 
@@ -155,7 +162,9 @@ fixes the properties, not the offsets.
 - **No weakening of the channel.** Elligator2 changes only how the public key is
   *encoded* on the wire, not the DH or the AEAD. The `NNpsk0` guarantees
   (mutual auth as "holds the token", forward secrecy, silence to a wrong token)
-  are unchanged, and the token proof still runs on top.
+  are unchanged, and the token proof still runs on top. The vendored encoder does
+  not cofactor-clear, so its public keys differ from stock X25519; both ends run
+  the same encoder, so this is self-consistent and never leaves the handshake.
 - **Downgrade.** Because selection is out-of-band config, there is no on-wire
   negotiation for an observer to strip to force v1. A fallback chain that lists
   v1 behind v2 is an operator's explicit choice, not an attacker's.
@@ -182,9 +191,9 @@ fixes the properties, not the offsets.
 
 ## Open questions
 
-1. ~~Elligator2 library choice~~ — **resolved:**
-   `gitlab.com/yawning/edwards25519-extra/elligator2`, added to `go.mod`.
-   Version pinned and API confirmed as the first plan step.
+1. ~~Elligator2 library choice~~ — **resolved by investigation:** vendor
+   yawning's GPL-3.0 `x25519ell2` (AGPL-compatible, both directions); deps
+   `filippo.io/edwards25519` + `edwards25519-extra`. See Dependencies.
 2. ~~Config surface~~ — **resolved:** a distinct transport name, `stealth2`.
 3. **ADR (follow-up)** — distil the accepted version into `docs/adr/0006-*` and
    add a row naming `stealth2` to ADR 0004's ingress table (opening
