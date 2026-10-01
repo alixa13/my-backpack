@@ -27,7 +27,7 @@ func Dwell(seconds int) time.Duration {
 // assumed so a typo in the list is reported at load time instead of producing a
 // chain that silently skips a candidate it does not recognise.
 var fallbackCapable = map[TransportType]bool{
-	TCP: true, TCPMUX: true, STEALTH: true,
+	TCP: true, TCPMUX: true, STEALTH: true, STEALTH2: true,
 	WS: true, WSS: true, WSMUX: true, WSSMUX: true,
 	KCP: true, QUIC: true, UDP: true, XDI: true, PCK: true,
 }
@@ -35,7 +35,7 @@ var fallbackCapable = map[TransportType]bool{
 // reverseTransports are the transports the reverse engine runs. spoof is not
 // one: it is refused by name elsewhere, with what to build instead.
 var reverseTransports = map[TransportType]bool{
-	TCP: true, TCPMUX: true, STEALTH: true,
+	TCP: true, TCPMUX: true, STEALTH: true, STEALTH2: true,
 	WS: true, WSS: true, WSMUX: true, WSSMUX: true,
 	KCP: true, QUIC: true, UDP: true, XDI: true, PCK: true,
 }

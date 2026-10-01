@@ -23,6 +23,11 @@ const (
 	// indistinguishable from random — so deep packet inspection has nothing to
 	// match. The pre-shared key is derived from the tunnel token.
 	STEALTH TransportType = "stealth"
+	// STEALTH2 is the stealth transport with the hardened opening: an Elligator2-
+	// encoded key, a padded first flight, and a masked length prefix, so the start
+	// of the connection carries no constant an observer can match. Opt-in; both
+	// ends must run it. See docs/superpowers/specs/2026-10-01-stealth-v2-opening-design.md.
+	STEALTH2 TransportType = "stealth2"
 	// XDI carries the KCP transport inside ICMP echo instead of UDP —
 	// experimental. It is for the network that filters UDP and TCP but not
 	// ICMP, where the tunnel rides in ping packets. Linux only, and needs a raw
