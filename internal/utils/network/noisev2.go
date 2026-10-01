@@ -1,6 +1,8 @@
 package network
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -8,6 +10,8 @@ import (
 	"time"
 
 	"github.com/flynn/noise"
+	"golang.org/x/crypto/chacha20"
+	"golang.org/x/crypto/hkdf"
 )
 
 // The stealth2 handshake: Noise NNpsk0 over an Elligator suite, each message
@@ -101,7 +105,7 @@ func NoiseClientConnV2(raw net.Conn, token string, timeout time.Duration) (net.C
 	if err != nil {
 		return nil, err
 	}
-	return newNoiseConnV2(raw, k), nil
+	return newNoiseConnV2(raw, k, true)
 }
 
 // NoiseServerConnV2 is the responder side of NoiseClientConnV2.
@@ -110,13 +114,176 @@ func NoiseServerConnV2(raw net.Conn, token string, timeout time.Duration) (net.C
 	if err != nil {
 		return nil, err
 	}
-	return newNoiseConnV2(raw, k), nil
+	return newNoiseConnV2(raw, k, false)
 }
 
-// newNoiseConnV2 builds the post-handshake conn. For now it is v1's padded
-// record layer; the masked-record conn replaces it here, using k.binding.
-func newNoiseConnV2(raw net.Conn, k *noiseKeysV2) net.Conn {
-	return &noiseConn{Conn: raw, send: k.send, recv: k.recv, pad: true}
+// newNoiseConnV2 builds the post-handshake conn: v1's padded record layer with
+// the length prefix of every record masked (noiseConnV2). initiator says which
+// end this is, which decides which of the two directional masks sends and which
+// receives.
+func newNoiseConnV2(raw net.Conn, k *noiseKeysV2, initiator bool) (net.Conn, error) {
+	sendMask, recvMask, err := newFramingMasks(k.binding, initiator)
+	if err != nil {
+		return nil, err
+	}
+	return &noiseConnV2{
+		noiseConn: &noiseConn{Conn: raw, send: k.send, recv: k.recv, pad: true},
+		sendMask:  sendMask,
+		recvMask:  recvMask,
+	}, nil
+}
+
+// The data phase hides its record lengths too.
+//
+// The opening carries no length at all (stealth2frame.go), but a Noise record
+// layer puts a two-byte big-endian length in front of every record, and that is
+// as recognisable as the handshake's was: the value is small and structured, it
+// is readable straight off the wire, and a run of them is a faithful transcript
+// of the record sizes. So the prefix is XORed with a ChaCha20 keystream before it
+// is sent, and the receiver XORs it back. The keystream is not a second cipher
+// over the record -- the AEAD still protects that -- it is only a mask over these
+// two bytes, so what an observer sees at each record boundary is uniform.
+//
+// The mask is keyed from the handshake's channel binding, which is unique to this
+// connection, so the nonce can be left at zero without ever reusing a (key,
+// nonce) pair. There is one key per direction: with a shared keystream, XORing a
+// client prefix with a server prefix would cancel it and leave the XOR of the two
+// lengths.
+const (
+	framingLabelC2S = "backpack-stealth2-framing-c2s-v1"
+	framingLabelS2C = "backpack-stealth2-framing-s2c-v1"
+)
+
+// newFramingMask returns the keystream for one direction of one session.
+func newFramingMask(binding []byte, label string) (*chacha20.Cipher, error) {
+	key := make([]byte, chacha20.KeySize)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, binding, nil, []byte(label)), key); err != nil {
+		return nil, err
+	}
+	return chacha20.NewUnauthenticatedCipher(key, make([]byte, chacha20.NonceSize))
+}
+
+// newFramingMasks returns the send and receive masks for an end of the
+// connection. The initiator sends client-to-server and receives server-to-client;
+// the responder is the mirror, so each end's send mask is the other's receive
+// mask.
+func newFramingMasks(binding []byte, initiator bool) (send, recv *chacha20.Cipher, err error) {
+	if len(binding) == 0 {
+		return nil, nil, fmt.Errorf("stealth2: no channel binding to key the record framing")
+	}
+	c2s, err := newFramingMask(binding, framingLabelC2S)
+	if err != nil {
+		return nil, nil, err
+	}
+	s2c, err := newFramingMask(binding, framingLabelS2C)
+	if err != nil {
+		return nil, nil, err
+	}
+	if initiator {
+		return c2s, s2c, nil
+	}
+	return s2c, c2s, nil
+}
+
+// noiseConnV2 is noiseConn with the record length prefix masked. It reuses
+// everything else -- the cipher states, the padding, the reused frame buffer --
+// and overrides only the two methods that touch the prefix.
+//
+// The masks are stateful: each record consumes two bytes of keystream per
+// direction, so the n-th record in a direction is always masked with the n-th two
+// bytes of that direction's stream. That holds because records go out and come in
+// in order under writeMu and readMu, and the mask is advanced under the same lock
+// as the wire write / read it belongs to.
+type noiseConnV2 struct {
+	*noiseConn
+
+	sendMask *chacha20.Cipher // guarded by writeMu
+	recvMask *chacha20.Cipher // guarded by readMu
+}
+
+// Write is noiseConn.Write with the length prefix masked on its way out. The
+// record is still built in place in frameBuf and sent with a single write, so
+// masking adds no allocation.
+func (c *noiseConnV2) Write(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	limit := noiseMaxPayload
+	if c.pad {
+		limit = noisePaddedMaxPayload
+	}
+
+	total := 0
+	for len(p) > 0 {
+		chunk := p
+		if len(chunk) > limit {
+			chunk = chunk[:limit]
+		}
+		c.frameBuf = append(c.frameBuf[:0], 0, 0)
+		frame, err := c.send.Encrypt(c.frameBuf, nil, c.plaintext(chunk))
+		if err != nil {
+			return total, err
+		}
+		c.frameBuf = frame
+		if len(frame)-noiseLenPrefix > noiseMaxFrame {
+			return total, fmt.Errorf("noise: message too large (%d bytes)", len(frame)-noiseLenPrefix)
+		}
+		binary.BigEndian.PutUint16(frame[:noiseLenPrefix], uint16(len(frame)-noiseLenPrefix))
+		// Masked last, immediately before the write, so every failure above
+		// leaves the keystream where the peer expects it.
+		c.sendMask.XORKeyStream(frame[:noiseLenPrefix], frame[:noiseLenPrefix])
+		if _, err := c.Conn.Write(frame); err != nil {
+			return total, err
+		}
+		total += len(chunk)
+		p = p[len(chunk):]
+	}
+	return total, nil
+}
+
+// Read is noiseConn.Read with the length prefix unmasked on its way in.
+func (c *noiseConnV2) Read(p []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
+	for len(c.readBuf) == 0 {
+		frame, err := c.readRecord()
+		if err != nil {
+			return 0, err
+		}
+		plain, err := c.recv.Decrypt(nil, nil, frame)
+		if err != nil {
+			return 0, fmt.Errorf("noise: record failed authentication: %w", err)
+		}
+		if plain, err = c.unpad(plain); err != nil {
+			return 0, err
+		}
+		c.readBuf = plain
+	}
+
+	n := copy(p, c.readBuf)
+	c.readBuf = c.readBuf[n:]
+	return n, nil
+}
+
+// readRecord reads one record's ciphertext: the masked length, then that many
+// bytes. The caller holds readMu. The mask advances only once the whole prefix
+// has been read, so an error before then leaves it in step with the peer.
+func (c *noiseConnV2) readRecord() ([]byte, error) {
+	var hdr [noiseLenPrefix]byte
+	if _, err := io.ReadFull(c.Conn, hdr[:]); err != nil {
+		return nil, err
+	}
+	c.recvMask.XORKeyStream(hdr[:], hdr[:])
+	n := binary.BigEndian.Uint16(hdr[:])
+	if n == 0 {
+		return nil, fmt.Errorf("noise: empty frame")
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(c.Conn, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 func noiseHandshakeV2(raw net.Conn, token string, initiator bool, timeout time.Duration) (*noiseKeysV2, error) {

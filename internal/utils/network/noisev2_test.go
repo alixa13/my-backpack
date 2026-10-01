@@ -3,6 +3,7 @@ package network
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/flynn/noise"
+	"golang.org/x/crypto/chacha20"
 )
 
 const v2Token = "stealth2-token-0123456789abcdefghij"
@@ -300,4 +302,271 @@ func TestV1ClientAgainstV2ServerFailsCleanly(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("v1 client hung against a v2 server")
 	}
+}
+
+// A large write spanning many records round-trips with the masked framing.
+func TestV2LargeWriteRoundTrips(t *testing.T) {
+	c, s := net.Pipe()
+	srv := make(chan net.Conn, 1)
+	go func() {
+		conn, err := NoiseServerConnV2(s, v2Token, 3*time.Second)
+		if err != nil {
+			t.Errorf("server: %v", err)
+		}
+		srv <- conn
+	}()
+	cl, err := NoiseClientConnV2(c, v2Token, 3*time.Second)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	sconn := <-srv
+	if sconn == nil {
+		t.Fatal("server handshake failed")
+	}
+	want := bytes.Repeat([]byte{0xAB}, 200*1024)
+	go func() { _, _ = cl.Write(want); _ = cl.Close() }()
+	got, err := io.ReadAll(sconn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("round-trip mismatch: %d of %d bytes", len(got), len(want))
+	}
+}
+
+// wireRecorder keeps each write made through it as its own chunk once armed, so
+// a test can look at the records the record layer put on the wire.
+type wireRecorder struct {
+	net.Conn
+	mu     sync.Mutex
+	armed  bool
+	chunks [][]byte
+}
+
+func (w *wireRecorder) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	if w.armed {
+		w.chunks = append(w.chunks, append([]byte(nil), p...))
+	}
+	w.mu.Unlock()
+	return w.Conn.Write(p)
+}
+
+// The data phase must not carry a readable length. The record layer writes each
+// record as a single write whose first two bytes are the length of the rest; in
+// the clear that prefix is exactly len(record)-2 on every record, which is the
+// tell this task removes. Masked, it is the length XOR a keystream, so it matches
+// the true length only by a 1-in-65536 coincidence.
+//
+// A coincidence on one record is possible, so the test tolerates one match in
+// sixteen (odds of two by chance are about 3e-8); the unmasked layer matches on
+// all sixteen.
+func TestV2LengthPrefixIsMasked(t *testing.T) {
+	const records = 16
+	c, s := net.Pipe()
+	rec := &wireRecorder{Conn: c}
+	srv := make(chan net.Conn, 1)
+	go func() {
+		conn, err := NoiseServerConnV2(s, v2Token, 3*time.Second)
+		if err != nil {
+			t.Errorf("server: %v", err)
+		}
+		srv <- conn
+	}()
+	cl, err := NoiseClientConnV2(rec, v2Token, 3*time.Second)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	sconn := <-srv
+	if sconn == nil {
+		t.Fatal("server handshake failed")
+	}
+	defer cl.Close()
+	defer sconn.Close()
+
+	rec.mu.Lock()
+	rec.armed = true
+	rec.mu.Unlock()
+
+	payload := bytes.Repeat([]byte{0x5A}, 100)
+	go func() {
+		for i := 0; i < records; i++ {
+			if _, err := cl.Write(payload); err != nil {
+				t.Errorf("write %d: %v", i, err)
+				return
+			}
+		}
+	}()
+	got := make([]byte, records*len(payload))
+	if _, err := io.ReadFull(sconn, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, bytes.Repeat(payload, records)) {
+		t.Fatal("payload did not survive the masked framing")
+	}
+
+	rec.mu.Lock()
+	chunks := rec.chunks
+	rec.mu.Unlock()
+	if len(chunks) != records {
+		t.Fatalf("recorded %d records on the wire, want %d", len(chunks), records)
+	}
+	plain := 0
+	for _, ch := range chunks {
+		if int(binary.BigEndian.Uint16(ch[:2])) == len(ch)-2 {
+			plain++
+		}
+	}
+	if plain > 1 {
+		t.Errorf("%d of %d records carry their length in the clear", plain, records)
+	}
+}
+
+// keystream returns the next n bytes of a mask.
+func keystream(c *chacha20.Cipher, n int) []byte {
+	out := make([]byte, n)
+	c.XORKeyStream(out, out)
+	return out
+}
+
+// The two directions are masked by two different keystreams, and each end's send
+// mask is the other end's receive mask. Were both directions to share one
+// keystream, XORing a c2s prefix with an s2c prefix would cancel the mask and
+// hand an observer the XOR of the two lengths.
+func TestV2FramingMasksAreDirectional(t *testing.T) {
+	binding := bytes.Repeat([]byte{7}, 32)
+	cs, cr, err := newFramingMasks(binding, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss, sr, err := newFramingMasks(binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csK, crK, ssK, srK := keystream(cs, 64), keystream(cr, 64), keystream(ss, 64), keystream(sr, 64)
+	if !bytes.Equal(csK, srK) {
+		t.Error("client send mask is not the server's receive mask")
+	}
+	if !bytes.Equal(crK, ssK) {
+		t.Error("client receive mask is not the server's send mask")
+	}
+	if bytes.Equal(csK, crK) {
+		t.Error("both directions use the same mask")
+	}
+
+	// A different session, a different mask.
+	other, _, err := newFramingMasks(bytes.Repeat([]byte{8}, 32), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(keystream(other, 64), csK) {
+		t.Error("two bindings produced the same mask")
+	}
+}
+
+// The masked layer keeps v1's property that a record costs no fresh buffer: the
+// record is built in place and written once. (The v1 test of this runs over v1
+// conns; this is the same assertion for the v2 conn.)
+func TestV2RecordLayerDoesNotAllocatePerRecord(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srv := make(chan net.Conn, 1)
+	go func() {
+		raw, err := ln.Accept()
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			srv <- nil
+			return
+		}
+		conn, err := NoiseServerConnV2(raw, v2Token, 3*time.Second)
+		if err != nil {
+			t.Errorf("server: %v", err)
+		}
+		srv <- conn
+	}()
+	raw, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := NoiseClientConnV2(raw, v2Token, 3*time.Second)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	b := <-srv
+	if b == nil {
+		t.Fatal("server handshake failed")
+	}
+	defer a.Close()
+	defer b.Close()
+	go io.Copy(io.Discard, b)
+
+	payload := make([]byte, 8*1024)
+	for i := 0; i < 8; i++ {
+		if _, err := a.Write(payload); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	got := testing.AllocsPerRun(50, func() {
+		if _, err := a.Write(payload); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	})
+	if got > 2 {
+		t.Errorf("a v2 record costs %.1f allocations", got)
+	}
+	t.Logf("%.1f allocations per v2 record", got)
+}
+
+// Both directions at once, each with its own mask, over a connection that is
+// being written and read concurrently at both ends.
+func TestV2BothDirectionsRoundTrip(t *testing.T) {
+	c, s := net.Pipe()
+	srv := make(chan net.Conn, 1)
+	go func() {
+		conn, err := NoiseServerConnV2(s, v2Token, 3*time.Second)
+		if err != nil {
+			t.Errorf("server: %v", err)
+		}
+		srv <- conn
+	}()
+	cl, err := NoiseClientConnV2(c, v2Token, 3*time.Second)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	sconn := <-srv
+	if sconn == nil {
+		t.Fatal("server handshake failed")
+	}
+	defer cl.Close()
+	defer sconn.Close()
+
+	up := bytes.Repeat([]byte{0x11}, 150*1024)
+	down := bytes.Repeat([]byte{0x22}, 90*1024)
+	var wg sync.WaitGroup
+	check := func(name string, from, to net.Conn, want []byte) {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, err := from.Write(want); err != nil {
+				t.Errorf("%s write: %v", name, err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			got := make([]byte, len(want))
+			if _, err := io.ReadFull(to, got); err != nil {
+				t.Errorf("%s read: %v", name, err)
+				return
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("%s: payload corrupted", name)
+			}
+		}()
+	}
+	check("client->server", cl, sconn, up)
+	check("server->client", sconn, cl, down)
+	wg.Wait()
 }
