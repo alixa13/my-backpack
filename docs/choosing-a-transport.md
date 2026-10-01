@@ -39,7 +39,9 @@ TCP-based transport instead.
 - **WebSocket** — looks like web traffic. `WSS` / `WSS Mux` add TLS with a
   browser fingerprint and bind the credential to the TLS session.
 
-Change a tunnel's transport any time from **Edit → Change transport**.
+Change a tunnel's transport any time from **Edit → Change transport** — except
+to `stealth2`, which the menu and the web panel refuse: set it in the config file
+on both ends.
 
 ---
 

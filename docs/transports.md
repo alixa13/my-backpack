@@ -100,8 +100,8 @@ too. Underneath it is Stealth's own handshake and record layer, keyed on the
 token the same way.
 
 A wrong token, a mangled opening and a replayed capture are all answered the
-same way — silence until the handshake deadline — so a prober learns nothing from
-a failure. The opening carries the hour, so the two ends' clocks must agree to
+same way — silence until the handshake deadline — so a prober cannot tell one
+failure from another. The opening carries the hour, so the two ends' clocks must agree to
 within about an hour — a skewed clock fails like a wrong token, in silence.
 **Opt-in, and both ends must run it**: nothing is negotiated on the wire, and a
 Stealth peer cannot read a Stealth2 opening. It can lead a
@@ -116,9 +116,10 @@ fallback_transports = ["stealth"]
 
 **Config file only for now** — the setup wizard, the web panel and the menu do
 not list it yet, so it is set by editing the file (`transport = "stealth2"`). The
-direct tunnel does not offer it either. It costs a little more than Stealth at
-connect time — an Elligator key and a first flight of up to 8 KB, mostly
-padding — and the stream after that is Stealth's. The reasoning is in
+direct tunnel does not offer it either. Its opening is bigger than Stealth's: up
+to 8 KB of mostly padding (about 4 KB on average) in each direction, against
+about 50 bytes, on every tunnel connection, pool refills included. The stream
+after that is Stealth's. The reasoning is in
 [ADR 0006](adr/0006-stealth2-opening.md).
 
 ### TCP + PCK

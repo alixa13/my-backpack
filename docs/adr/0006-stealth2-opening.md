@@ -1,7 +1,7 @@
 # ADR 0006 — stealth2: an opening with no constant to match
 
-**Status:** accepted (2026-10-01). Adds a row to ADR 0004's table; keeps to
-ADR 0005's rule that nothing on an existing wire changes.
+**Status:** proposed (2026-10-02). Adds a row to ADR 0004's table; keeps to
+ADR 0001/0005's stance that nothing on an existing wire changes.
 
 ## Context
 
@@ -65,6 +65,9 @@ the Noise handshake, the token proof and the mux above it are `stealth`'s.
 - **After the handshake the length prefix is masked too.** Both ends hold the
   channel binding, and each direction's two-byte prefix is XORed with a ChaCha20
   keystream keyed from it, so no connection shares a keystream with another. The
+  mask is not forward-secret: the binding holds the token's contribution but no
+  DH output, so a token-holder with a recorded transcript can recompute it. It
+  hides the length bytes from an observer without the token, nothing more. The
   records are `stealth`'s ChaCha20-Poly1305 records, padding and all. Opening and
   data phase use different keys — token, then channel binding — each the one that
   is shared at that moment.
@@ -74,8 +77,10 @@ the Noise handshake, the token proof and the mux above it are `stealth`'s.
   "v2" on the wire, so an observer has no negotiation to strip to force a
   downgrade; a chain that lists `stealth` is the operator's choice. A sub-flag on
   `stealth` would have needed a new concept in every place a transport is
-  chosen; a name needs only to be added where transports are listed, which the
-  source-reading parity tests guard.
+  chosen; a name needs only to be added where transports are listed. Nothing
+  guards that: the parity tests are keyed per engine, and `stealth2` shares the
+  `tcp` engine, so the wizard, panel, menu, share links and Link Test omitting it
+  (see Consequences) failed no test. That omission is the deferred follow-up.
 
 Not decided here: traffic-shape and timing camouflage (record-size buckets,
 dummy records, jitter), and mimicry of TLS or HTTP. The goal is an opening that
@@ -95,8 +100,8 @@ looks like nothing, not like something.
   a client that has never connected from its address, as ADR 0004 already says
   of every ingress.
 - The opening is bigger and varies: up to 8 KB, about 4 KB on average, where
-  `stealth` sent about 50 bytes — on every tunnel connection, pool refills
-  included.
+  `stealth` sent about 50 bytes — in each direction, on every tunnel connection,
+  pool refills included.
 - The MAC carries the epoch hour, so ends whose clocks differ by more than about
   an hour fail the handshake silently, which looks like a wrong token. A
   `stealth2` tunnel that will not connect is a question about the time as well

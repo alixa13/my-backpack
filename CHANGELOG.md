@@ -16,7 +16,8 @@ All notable changes to Backpack are documented here.
   on the wire and the first flight varies in size, and masks the length prefix of
   every record after it. A wrong token, a bad MAC and a replayed opening (a
   bounded filter remembers the accepted ones for four hours) are all met with
-  silence until the handshake deadline, so a probe learns nothing from a failure.
+  silence until the handshake deadline, so a prober cannot tell one failure from
+  another.
   Inside the frame it is `stealth`'s own Noise `NNpsk0` handshake, keyed on the
   token. **Opt-in, and both ends must run it**: nothing is negotiated, `stealth`
   is byte-for-byte unchanged, and a `stealth` peer cannot read a `stealth2`
@@ -24,7 +25,7 @@ All notable changes to Backpack are documented here.
   (`fallback_transports = ["stealth"]`). The two ends' clocks must agree to within
   about an hour. **Config file only for now** — `transport = "stealth2"`; the
   setup wizard, the web panel, the menu, the share links and the Link Test do not
-  list it yet, and the direct tunnel's `stealth` is still the first format. A
+  list it yet, and direct-tunnel `stealth` is unchanged (still v1). A
   failed `stealth2` opening is held to the handshake deadline but stays inside the
   accept gate, so a probe flood fills the gate rather than escaping it. See
   `docs/adr/0006-stealth2-opening.md`.
