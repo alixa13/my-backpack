@@ -61,6 +61,7 @@ those established techniques rather than inventing wire tricks.
 | Key tells | Elligator2 representative for the ephemeral key (fixes the fixed-bit and on-curve tells in this one wire break) |
 | Config surface | A distinct transport name, `stealth2`, rather than a mode flag on `stealth` |
 | Elligator2 impl | Vendor yawning's `x25519ell2` (GPL-3.0, compatible with our AGPL-3.0; both directions, ~180 LOC + its own test); deps `filippo.io/edwards25519` + `edwards25519-extra`. Not hand-rolled, not reimplemented from memory |
+| Opening framing | obfs4-style mark/MAC (`m \| P \| M \| MAC`), token-keyed; no wire length. Data phase keeps channel-binding-keyed length masking. See "v2 opening framing" |
 
 ## Architecture
 
@@ -100,9 +101,11 @@ is unchanged. v2 is purely a different skin on the same bytes.
 
 ## Wire format (v2), descriptively
 
-- **First flight:** the Elligator2 representative of the ephemeral key (uniform
-  bytes, no fixed bit), followed by AEAD-protected payload that carries the
-  version marker and random-length filler. No cleartext length precedes it.
+- **First flight:** an obfs4-style `m | P | M | MAC` frame (see "v2 opening
+  framing" below). `m` is the Noise NNpsk0 message (Elligator-uniform `e` +
+  fixed-length AEAD payload), `P` random padding, `M` a token-keyed mark that
+  delimits `P`, `MAC` a token-keyed tag. No length, type, or constant on the
+  wire — only random-looking bytes, located by a peer holding the token.
 - **Framing of subsequent records:** length information is carried under the
   per-connection keystream rather than as a readable big-endian prefix; record
   bodies remain the v1 ChaCha20-Poly1305 records, including the existing inside-
@@ -113,6 +116,60 @@ is unchanged. v2 is purely a different skin on the same bytes.
 
 Byte-level field layouts are deferred to the implementation plan; this document
 fixes the properties, not the offsets.
+
+## v2 opening framing (obfs4-style mark/MAC)
+
+The opening cannot carry a readable length — the first bytes have only the
+static token as shared key material. We adopt the obfs4 handshake framing (Tor
+Project), keyed by the token in place of obfs4's server-identity/node-id.
+
+**Key (both ends, from the token):**
+`markKey = HKDF-SHA256(token, "backpack-stealth2-mark-v1", 32)`.
+
+**Each handshake message `m`** — a raw Noise NNpsk0 message produced over the
+Elligator suite from Task 1, so `e` is a uniform representative and, because the
+Noise payload is a *fixed* length (the version byte; all size variation lives in
+`P`), `len(m)` is a protocol constant both ends know — is sent as:
+
+```
+m | P | M | MAC
+```
+
+- `P` — random padding, length drawn in `[0, maxPad]`, bounding the whole first
+  flight to `maxOpening` (obfs4 uses 8192 bytes).
+- `M` (mark) = `HMAC-SHA256-128(markKey, m)` — 16 bytes.
+- `MAC` = `HMAC-SHA256-128(markKey, m | P | M | E)` — 16 bytes, where
+  `E = floor(unixtime / 3600)` (epoch hour), binding the frame loosely to the
+  clock.
+
+**Receiver:** reads the known constant `len(m)` bytes as `m`, computes
+`M = HMAC(markKey, m)`, scans the following bytes (bounded by `maxOpening`) for
+`M` to find where `P` ends, then verifies `MAC` over `m | P | M | E`, accepting
+`E` and `E ± 1` for clock skew. On any failure it writes nothing back — the
+dead-port property holds: a wrong token gives a wrong `markKey`, the mark is
+never found, and a probe sees an unresponsive port.
+
+**Replay:** the receiver keeps a short-lived, **bounded** filter of seen `MAC`s
+within the epoch window (as obfs4 does), rejecting a replayed opening. This is
+**included** (decided 2026-10-01), not deferred: without it a censor who
+captures one genuine opening can replay it and observe the server answer —
+confirming the endpoint by active probing, the exact attack this transport
+exists to resist. The filter is bounded in size and time (per ADR 0004's rule
+that an unproven peer holds only a bounded share and cannot evict a genuine
+one), so the replay memory itself cannot be flooded to push out real entries.
+The inner NNpsk0 + token proof still gate session establishment on top.
+
+**Why it works:** `e` is Elligator-uniform, `P` is random, `M` and `MAC` are
+HMAC outputs — the whole first flight is bytes indistinguishable from random, of
+a size that varies with `P`, with nothing structural on the wire. Only a peer
+holding the token can even locate the mark.
+
+**Data phase.** The mark/MAC framing covers only the handshake. Once the Noise
+handshake completes, both ends share the channel binding, so data records use
+the Noise ChaCha20-Poly1305 record layer with the 2-byte length prefix masked by
+a ChaCha20 keystream keyed from the channel binding (per-connection,
+per-direction). The opening and the data phase thus use different keying domains
+— token vs. channel binding — each matched to what is shared when.
 
 ## Negotiation, config, and rollout
 
@@ -155,10 +212,14 @@ fixes the properties, not the offsets.
 
 ## Security considerations
 
-- **Keystream reuse.** The opening keystream must be unique per connection, or
-  two connections of one tunnel open identically — reintroducing the constant.
-  Derivation binds the token and the on-wire ephemeral key; the derivation and
-  its uniqueness get a dedicated test.
+- **Opening uses no keystream.** The mark/MAC framing (token-keyed HMAC) carries
+  the opening, so there is no opening keystream to reuse across connections — the
+  per-connection variation comes from the Elligator-uniform `e`, the random `P`,
+  and the HMAC outputs. The mark/MAC and the dead-port behaviour on a wrong token
+  get dedicated tests.
+- **Data-phase length mask is per-connection.** The data records' length mask is
+  keyed from the Noise channel binding, which is unique per handshake, so two
+  connections never share a data-phase keystream. Pinned by a test.
 - **No weakening of the channel.** Elligator2 changes only how the public key is
   *encoded* on the wire, not the DH or the AEAD. The `NNpsk0` guarantees
   (mutual auth as "holds the token", forward secrecy, silence to a wrong token)
