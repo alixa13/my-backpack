@@ -570,3 +570,108 @@ func TestV2BothDirectionsRoundTrip(t *testing.T) {
 	check("server->client", sconn, cl, down)
 	wg.Wait()
 }
+
+// v2Pipe runs a v2 handshake over a net.Pipe and returns the masked conns.
+func v2Pipe(t *testing.T) (cl, srv *noiseConnV2) {
+	t.Helper()
+	c, s := net.Pipe()
+	ch := make(chan net.Conn, 1)
+	go func() {
+		conn, err := NoiseServerConnV2(s, v2Token, 3*time.Second)
+		if err != nil {
+			t.Errorf("server: %v", err)
+		}
+		ch <- conn
+	}()
+	client, err := NoiseClientConnV2(c, v2Token, 3*time.Second)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	server := <-ch
+	if server == nil {
+		t.Fatal("server handshake failed")
+	}
+	t.Cleanup(func() { client.Close(); server.Close() })
+	return client.(*noiseConnV2), server.(*noiseConnV2)
+}
+
+// chacha20 panics when its 32-bit block counter wraps, and nothing on the data
+// path recovers, so a direction that ran out of keystream would take every
+// tunnel in the process down with it. The limit has to be somewhere the mask
+// cannot reach: each record costs 2 bytes of a 2^32-block, 64-byte-block stream.
+func TestV2MaskLimitIsBelowTheKeystream(t *testing.T) {
+	const keystreamRecords = (uint64(1) << 32) * 64 / noiseLenPrefix // 2^37
+	if maxMaskedRecords > keystreamRecords/2 {
+		t.Errorf("maxMaskedRecords %d is not at least a factor of two below the %d records a keystream lasts",
+			maxMaskedRecords, keystreamRecords)
+	}
+	cl, srv := v2Pipe(t)
+	if cl.maskLimit != maxMaskedRecords || srv.maskLimit != maxMaskedRecords {
+		t.Errorf("a new connection's limit is %d/%d, want %d", cl.maskLimit, srv.maskLimit, maxMaskedRecords)
+	}
+}
+
+// At the limit a direction fails with an error on that one connection; it does
+// not panic. The sender refuses the record before it is built or sent.
+func TestV2SendMaskExhaustionIsAnErrorNotAPanic(t *testing.T) {
+	cl, srv := v2Pipe(t)
+	cl.maskLimit = 3
+	go io.Copy(io.Discard, srv)
+
+	for i := 0; i < 3; i++ {
+		if _, err := cl.Write([]byte("record")); err != nil {
+			t.Fatalf("record %d, below the limit: %v", i, err)
+		}
+	}
+	n, err := cl.Write([]byte("one too many"))
+	if !errors.Is(err, errMaskExhausted) {
+		t.Fatalf("write at the limit: n=%d err=%v, want errMaskExhausted", n, err)
+	}
+	if n != 0 {
+		t.Errorf("write at the limit reported %d bytes written", n)
+	}
+	// And it stays refused rather than wrapping around.
+	if _, err := cl.Write([]byte("again")); !errors.Is(err, errMaskExhausted) {
+		t.Errorf("second write at the limit: %v", err)
+	}
+}
+
+// The receiver is guarded separately: it refuses the record the sender was still
+// willing to send, again without panicking, and without waiting on the wire.
+func TestV2RecvMaskExhaustionIsAnErrorNotAPanic(t *testing.T) {
+	cl, srv := v2Pipe(t)
+	srv.maskLimit = 3
+	go func() {
+		for i := 0; i < 4; i++ {
+			if _, err := cl.Write([]byte("record")); err != nil {
+				return
+			}
+		}
+	}()
+
+	got := make([]byte, 3*len("record"))
+	if _, err := io.ReadFull(srv, got); err != nil {
+		t.Fatalf("records below the limit: %v", err)
+	}
+	if string(got) != "recordrecordrecord" {
+		t.Fatalf("records below the limit were corrupted: %q", got)
+	}
+	if _, err := srv.Read(make([]byte, 16)); !errors.Is(err, errMaskExhausted) {
+		t.Fatalf("read at the limit: %v, want errMaskExhausted", err)
+	}
+}
+
+// Far below the limit the guard is invisible: records flow both ways and the
+// counters just track them.
+func TestV2RecordCountersTrackRecords(t *testing.T) {
+	cl, srv := v2Pipe(t)
+	go io.Copy(io.Discard, srv)
+	for i := 0; i < 5; i++ {
+		if _, err := cl.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cl.sent != 5 {
+		t.Errorf("sent counter %d after 5 records", cl.sent)
+	}
+}

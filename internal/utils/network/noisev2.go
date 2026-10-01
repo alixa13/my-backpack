@@ -3,6 +3,7 @@ package network
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -130,6 +131,7 @@ func newNoiseConnV2(raw net.Conn, k *noiseKeysV2, initiator bool) (net.Conn, err
 		noiseConn: &noiseConn{Conn: raw, send: k.send, recv: k.recv, pad: true},
 		sendMask:  sendMask,
 		recvMask:  recvMask,
+		maskLimit: maxMaskedRecords,
 	}, nil
 }
 
@@ -153,6 +155,27 @@ const (
 	framingLabelC2S = "backpack-stealth2-framing-c2s-v1"
 	framingLabelS2C = "backpack-stealth2-framing-s2c-v1"
 )
+
+// maxMaskedRecords is how many records one direction of a connection may carry
+// before the length mask is retired.
+//
+// x/crypto/chacha20 keeps a 32-bit block counter and panics, rather than
+// returning an error, on the XORKeyStream call that would wrap it. A mask byte
+// pair costs two bytes of keystream, a block is 64 bytes and there are 2^32
+// blocks, so a direction's keystream lasts 2^38 / 2 = 2^37 records. Nothing on
+// the data path recovers, so reaching that panic would take down every tunnel in
+// the process, not just the one connection.
+//
+// The limit sits a factor of two below that, comfortably clear of the edge yet
+// still ~6.9e10 records: at the 64KB record ceiling that is petabytes, and only a
+// pathological stream of tiny records gets anywhere near it. Past the limit the
+// connection fails cleanly with errMaskExhausted and the dialer re-dials, which
+// is a fresh handshake and a fresh keystream.
+const maxMaskedRecords uint64 = 1 << 36
+
+// errMaskExhausted is returned, on the one connection concerned, instead of
+// letting the mask's keystream run out.
+var errMaskExhausted = errors.New("stealth2: length-mask keystream exhausted, reconnect")
 
 // newFramingMask returns the keystream for one direction of one session.
 func newFramingMask(binding []byte, label string) (*chacha20.Cipher, error) {
@@ -199,6 +222,13 @@ type noiseConnV2 struct {
 
 	sendMask *chacha20.Cipher // guarded by writeMu
 	recvMask *chacha20.Cipher // guarded by readMu
+
+	// sent and received count the records that have consumed keystream in each
+	// direction, and maskLimit is how many a direction may use (see
+	// maxMaskedRecords). It is a field rather than the constant so a test can
+	// lower it on one connection instead of running 2^36 records.
+	sent, received uint64 // guarded by writeMu and readMu respectively
+	maskLimit      uint64
 }
 
 // Write is noiseConn.Write with the length prefix masked on its way out. The
@@ -219,6 +249,11 @@ func (c *noiseConnV2) Write(p []byte) (int, error) {
 		if len(chunk) > limit {
 			chunk = chunk[:limit]
 		}
+		// Checked before the record is encrypted, so a refused record has not
+		// advanced either the cipher or the keystream.
+		if c.sent >= c.maskLimit {
+			return total, errMaskExhausted
+		}
 		c.frameBuf = append(c.frameBuf[:0], 0, 0)
 		frame, err := c.send.Encrypt(c.frameBuf, nil, c.plaintext(chunk))
 		if err != nil {
@@ -232,6 +267,7 @@ func (c *noiseConnV2) Write(p []byte) (int, error) {
 		// Masked last, immediately before the write, so every failure above
 		// leaves the keystream where the peer expects it.
 		c.sendMask.XORKeyStream(frame[:noiseLenPrefix], frame[:noiseLenPrefix])
+		c.sent++
 		if _, err := c.Conn.Write(frame); err != nil {
 			return total, err
 		}
@@ -270,11 +306,18 @@ func (c *noiseConnV2) Read(p []byte) (int, error) {
 // bytes. The caller holds readMu. The mask advances only once the whole prefix
 // has been read, so an error before then leaves it in step with the peer.
 func (c *noiseConnV2) readRecord() ([]byte, error) {
+	// Refused before reading anything: past the limit there is no keystream to
+	// unmask the next prefix with, and waiting for bytes that cannot be decoded
+	// would only hang.
+	if c.received >= c.maskLimit {
+		return nil, errMaskExhausted
+	}
 	var hdr [noiseLenPrefix]byte
 	if _, err := io.ReadFull(c.Conn, hdr[:]); err != nil {
 		return nil, err
 	}
 	c.recvMask.XORKeyStream(hdr[:], hdr[:])
+	c.received++
 	n := binary.BigEndian.Uint16(hdr[:])
 	if n == 0 {
 		return nil, fmt.Errorf("noise: empty frame")
