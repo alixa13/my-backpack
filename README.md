@@ -9,20 +9,20 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AminMGMT/BackPack/releases/latest">
-    <img src="https://img.shields.io/github/v/release/AminMGMT/BackPack?logo=github&label=release&color=orange" alt="Latest release">
+  <a href="https://github.com/alixa13/my-backpack/releases/latest">
+    <img src="https://img.shields.io/github/v/release/alixa13/my-backpack?logo=github&label=release&color=orange" alt="Latest release">
   </a>
   <a href="go.mod">
-    <img src="https://img.shields.io/github/go-mod/go-version/AminMGMT/BackPack?logo=go&label=Go" alt="Go version">
+    <img src="https://img.shields.io/github/go-mod/go-version/alixa13/my-backpack?logo=go&label=Go" alt="Go version">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/AminMGMT/BackPack?color=orange" alt="License">
+    <img src="https://img.shields.io/github/license/alixa13/my-backpack?color=orange" alt="License">
   </a>
-  <a href="https://github.com/AminMGMT/BackPack/stargazers">
-    <img src="https://img.shields.io/github/stars/AminMGMT/BackPack?style=flat&logo=github&color=orange" alt="GitHub stars">
+  <a href="https://github.com/alixa13/my-backpack/stargazers">
+    <img src="https://img.shields.io/github/stars/alixa13/my-backpack?style=flat&logo=github&color=orange" alt="GitHub stars">
   </a>
-  <a href="https://github.com/AminMGMT/BackPack/releases">
-    <img src="https://img.shields.io/github/downloads/AminMGMT/BackPack/total?logo=github&label=downloads&color=orange" alt="Downloads">
+  <a href="https://github.com/alixa13/my-backpack/releases">
+    <img src="https://img.shields.io/github/downloads/alixa13/my-backpack/total?logo=github&label=downloads&color=orange" alt="Downloads">
   </a>
 </p>
 
@@ -234,7 +234,7 @@ See [Forwarded UDP](docs/forwarded-udp.md).
 On both servers:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/AminMGMT/BackPack/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/alixa13/my-backpack/main/install.sh)
 ```
 
 Then:
