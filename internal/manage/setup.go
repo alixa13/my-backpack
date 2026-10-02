@@ -36,6 +36,7 @@ var transportGroups = []struct {
 		{"TCP", "plain & fast — start here if unsure", "tcp"},
 		{"TCP Mux", "many streams over few connections — multiplexed", "tcpmux"},
 		{"TCP + Stealth", "encrypted with no fingerprint — hardest to detect, for heavy filtering", "stealth"},
+		{"TCP + Stealth2", "hardened Stealth — randomised opening, nothing to fingerprint even at connect; both ends must run it", "stealth2"},
 		{"TCP + PCK", "builds its own TCP packets, below the kernel — for a path where a normal TCP flow is reset or throttled; Linux, needs root", "pck"},
 	}},
 	{"UDP", "lower latency, better on lossy or throttled links", []transportEntry{

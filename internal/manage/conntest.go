@@ -62,7 +62,7 @@ const connTestKind = "test"
 // the direct ones when the operator names a source to forge (see
 // ConnTestOptions.SpoofSrc); pck, on either side, needs root on both servers.
 var (
-	connTestReverse = []string{"tcp", "tcpmux", "stealth", "pck", "ws", "wss", "wsmux", "wssmux", "kcp", "quic", "udp"}
+	connTestReverse = []string{"tcp", "tcpmux", "stealth", "stealth2", "pck", "ws", "wss", "wsmux", "wssmux", "kcp", "quic", "udp"}
 	connTestDirect  = []string{"udp", "quic", "pck", "xdi", "sni"}
 )
 

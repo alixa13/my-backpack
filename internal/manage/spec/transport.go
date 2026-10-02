@@ -51,7 +51,7 @@ func IsDatagram(t string) bool {
 // protocol header that tells the service behind the tunnel the real client IP.
 func SupportsProxyProtocol(t string) bool {
 	switch t {
-	case "tcp", "tcpmux", "kcp", "wsmux", "wssmux", "stealth", "quic", "pck":
+	case "tcp", "tcpmux", "kcp", "wsmux", "wssmux", "stealth", "stealth2", "quic", "pck":
 		return true
 	}
 	return false
@@ -72,7 +72,7 @@ func NeedsTLS(t string) bool {
 // carriers.
 func ValidTransport(t string) bool {
 	switch t {
-	case "tcp", "tcpmux", "udp", "kcp", "ws", "wss", "wsmux", "wssmux", "stealth", "xdi", "quic", "pck":
+	case "tcp", "tcpmux", "udp", "kcp", "ws", "wss", "wsmux", "wssmux", "stealth", "stealth2", "xdi", "quic", "pck":
 		return true
 	}
 	return false

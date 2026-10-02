@@ -51,7 +51,7 @@ var shareFieldIDs = []string{
 var shareWords = []string{
 	"reverse", "direct", "iran", "kharej",
 	"tcp", "tcpmux", "stealth", "pck", "ws", "wss", "wsmux", "wssmux", "kcp", "quic", "udp",
-	"xdi", "sni", "spoof", "gre", "balance", "turbo", "aggressive", "throughput",
+	"xdi", "sni", "spoof", "gre", "balance", "turbo", "aggressive", "throughput", "stealth2",
 }
 
 // How a string value is written.
